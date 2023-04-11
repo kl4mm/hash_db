@@ -1,12 +1,12 @@
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::io::{
     self, BufRead, BufReader as SyncBufReader, BufWriter as SyncBufWriter, SeekFrom, Write,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use hash_db::command::Command;
 use tokio::fs::OpenOptions;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
 
 struct KeyData {
     file: String,
@@ -109,39 +109,5 @@ async fn main() -> io::Result<()> {
         };
 
         buf.clear();
-    }
-}
-
-enum Command<'a> {
-    Insert(&'a str, &'a str),
-    Get(&'a str),
-    None,
-}
-
-impl<'a> Command<'a> {
-    pub fn from_str(s: &'a str) -> Self {
-        let split: Vec<&str> = s.split_whitespace().collect();
-
-        if split.len() < 2 {
-            return Command::None;
-        }
-
-        match split[0].to_lowercase().as_str() {
-            "insert" => {
-                if split.len() != 3 {
-                    return Command::None;
-                }
-
-                Command::Insert(split[1], split[2])
-            }
-            "get" => {
-                if split.len() != 2 {
-                    return Command::None;
-                }
-
-                Command::Get(split[1])
-            }
-            _ => Command::None,
-        }
     }
 }
