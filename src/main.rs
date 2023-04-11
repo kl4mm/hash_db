@@ -1,24 +1,27 @@
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::io::{
     self, BufRead, BufReader as SyncBufReader, BufWriter as SyncBufWriter, SeekFrom, Write,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::fs::OpenOptions;
-use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
+
+struct KeyData {
+    file: String,
+    value_s: u64,
+    value_p: u64,
+    time: u64,
+}
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let mut index: HashMap<String, u64> = HashMap::new();
+    let mut index: HashMap<String, KeyData> = HashMap::new();
 
     let mut stdin = SyncBufReader::new(io::stdin());
     let mut stdout = SyncBufWriter::new(io::stdout());
     let mut stderr = SyncBufWriter::new(io::stderr());
-    let mut log = OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .open("log")
-        .await?;
 
     let mut buf = String::new();
     loop {
@@ -26,48 +29,77 @@ async fn main() -> io::Result<()> {
 
         match Command::from_str(&buf) {
             Command::Insert(k, v) => {
-                let entry = format!("{k}:{v}\n");
+                let log = OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open("log") // TODO: get latest log file
+                    .await?;
 
-                // The offset of the entry will be the len of the file
-                let offset = log.metadata().await?.len();
+                let time = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("Time before UNIX Epoch")
+                    .as_secs();
+
+                let mut entry: Vec<u8> = Vec::new();
+                // timestamp, key len and value len occupy 8 bytes each
+                entry.extend_from_slice(&time.to_be_bytes());
+                entry.extend_from_slice(&(k.len()).to_be_bytes());
+                entry.extend_from_slice(&(v.len()).to_be_bytes());
+                // Key and Value:
+                entry.extend_from_slice(k.as_bytes());
+                entry.extend_from_slice(v.as_bytes());
+
+                // The position of the entry will be the len of the file
+                let position = log.metadata().await?.len();
 
                 // Write the entry
                 let mut writer = BufWriter::new(log);
-                writer.write_all(entry.as_bytes()).await?;
+                writer.write_all(&entry).await?;
                 writer.flush().await?;
 
                 // Insert the key and offset to index
-                index.insert(k.into(), offset);
+                index.insert(
+                    k.into(),
+                    KeyData {
+                        file: "log".into(), // TODO: get latest log file,
+                        value_s: v.len() as u64,
+                        value_p: position,
+                        time,
+                    },
+                );
 
                 stdout.write_all(b"OK\n")?;
-
-                log = writer.into_inner();
+                stdout.flush()?;
             }
             Command::Get(k) => {
                 if let Some(offset) = index.get(k) {
-                    let mut entry = String::new();
+                    let log = OpenOptions::new()
+                        .read(true)
+                        .open("log") // TODO: get latest log file
+                        .await?;
 
-                    // Read from the offset until \n
+                    // Find start of entry
                     let mut reader = BufReader::new(log);
-                    reader.seek(SeekFrom::Start(*offset)).await?;
-                    reader.read_line(&mut entry).await?;
+                    reader.seek(SeekFrom::Start(offset.value_p)).await?;
 
-                    // Split with : to get the value
-                    let value = match entry.split_once(':') {
-                        Some((_, v)) => v,
-                        None => {
-                            stderr.write(b"There was an error writing this entry\n")?;
-                            stderr.flush()?;
+                    // Read the timestamp, key len and value len
+                    let _timestamp = reader.read_u64().await?;
+                    let key_s = reader.read_u64().await?;
+                    let value_s = reader.read_u64().await?;
 
-                            log = reader.into_inner();
-                            continue;
-                        }
-                    };
+                    // Read the key and value:
+                    let mut key = vec![0; key_s as usize];
+                    reader.read_exact(&mut key).await?;
 
-                    stdout.write(value.as_bytes())?;
+                    let mut value = vec![0; value_s as usize];
+                    reader.read_exact(&mut value).await?;
+
+                    // Write to stdout
+                    stdout.write(&key)?;
+                    stdout.write(b" ")?;
+                    stdout.write(&value)?;
+                    stdout.write(b"\n")?;
                     stdout.flush()?;
-
-                    log = reader.into_inner();
                 }
             }
             Command::None => {
