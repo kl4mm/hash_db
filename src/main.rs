@@ -5,19 +5,14 @@ use std::io::{
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hash_db::command::Command;
+use hash_db::entry::{self, Entry, KeyData};
 use tokio::fs::OpenOptions;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
-
-struct KeyData {
-    file: String,
-    value_s: u64,
-    value_p: u64,
-    time: u64,
-}
+use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let mut index: HashMap<String, KeyData> = HashMap::new();
+    entry::bootstrap(&mut index).await?;
 
     let mut stdin = SyncBufReader::new(io::stdin());
     let mut stdout = SyncBufWriter::new(io::stdout());
@@ -63,7 +58,7 @@ async fn main() -> io::Result<()> {
                     KeyData {
                         file: "log".into(), // TODO: get latest log file,
                         value_s: v.len() as u64,
-                        value_p: position,
+                        pos: position,
                         time,
                     },
                 );
@@ -72,32 +67,29 @@ async fn main() -> io::Result<()> {
                 stdout.flush()?;
             }
             Command::Get(k) => {
-                if let Some(offset) = index.get(k) {
+                if let Some(key_data) = index.get(k) {
                     let log = OpenOptions::new()
                         .read(true)
-                        .open("log") // TODO: get latest log file
+                        .open(&key_data.file) // TODO: get latest log file
                         .await?;
 
                     // Find start of entry
                     let mut reader = BufReader::new(log);
-                    reader.seek(SeekFrom::Start(offset.value_p)).await?;
+                    reader.seek(SeekFrom::Start(key_data.pos)).await?;
 
-                    // Read the timestamp, key len and value len
-                    let _timestamp = reader.read_u64().await?;
-                    let key_s = reader.read_u64().await?;
-                    let value_s = reader.read_u64().await?;
-
-                    // Read the key and value:
-                    let mut key = vec![0; key_s as usize];
-                    reader.read_exact(&mut key).await?;
-
-                    let mut value = vec![0; value_s as usize];
-                    reader.read_exact(&mut value).await?;
+                    let entry = match Entry::read(&mut reader).await {
+                        Some(e) => e,
+                        None => {
+                            stderr.write_all(b"There was a problem reading the entry\n")?;
+                            stderr.flush()?;
+                            continue;
+                        }
+                    };
 
                     // Write to stdout
-                    stdout.write(&key)?;
+                    stdout.write(&entry.key)?;
                     stdout.write(b" ")?;
-                    stdout.write(&value)?;
+                    stdout.write(&entry.value)?;
                     stdout.write(b"\n")?;
                     stdout.flush()?;
                 }
