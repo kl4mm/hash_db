@@ -67,9 +67,17 @@ impl Entry {
         })
     }
 
-    // Returns bytes + position
-    pub async fn new_bytes(key: &str, value: u64) -> (Vec<u8>, u64) {
-        todo!()
+    pub fn new_bytes(k: &str, v: &str, time: u64) -> Vec<u8> {
+        let mut entry: Vec<u8> = Vec::new();
+        // timestamp, key len and value len occupy 8 bytes each
+        entry.extend_from_slice(&time.to_be_bytes());
+        entry.extend_from_slice(&(k.len()).to_be_bytes());
+        entry.extend_from_slice(&(v.len()).to_be_bytes());
+        // Key and Value:
+        entry.extend_from_slice(k.as_bytes());
+        entry.extend_from_slice(v.as_bytes());
+
+        entry
     }
 
     pub fn add_to_index(&self, file: String, index: &mut HashMap<String, KeyData>) {

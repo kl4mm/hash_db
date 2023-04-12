@@ -30,19 +30,14 @@ async fn main() -> io::Result<()> {
                     .open("log") // TODO: get latest log file
                     .await?;
 
+                // Get current time
                 let time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .expect("Time before UNIX Epoch")
                     .as_secs();
 
-                let mut entry: Vec<u8> = Vec::new();
-                // timestamp, key len and value len occupy 8 bytes each
-                entry.extend_from_slice(&time.to_be_bytes());
-                entry.extend_from_slice(&(k.len()).to_be_bytes());
-                entry.extend_from_slice(&(v.len()).to_be_bytes());
-                // Key and Value:
-                entry.extend_from_slice(k.as_bytes());
-                entry.extend_from_slice(v.as_bytes());
+                // Get entry bytes
+                let entry = Entry::new_bytes(k, v, time);
 
                 // The position of the entry will be the len of the file
                 let position = log.metadata().await?.len();
