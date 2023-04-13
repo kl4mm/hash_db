@@ -78,6 +78,30 @@ impl Entry {
         entry
     }
 
+    pub fn new(k: &str, v: &str, time: u64, pos: u64) -> Self {
+        Self {
+            time,
+            key_s: k.len() as u64,
+            value_s: v.len() as u64,
+            key: k.as_bytes().to_vec(),
+            value: v.as_bytes().to_vec(),
+            pos,
+        }
+    }
+
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let mut entry: Vec<u8> = Vec::new();
+        // timestamp, key len and value len occupy 8 bytes each
+        entry.extend_from_slice(&self.time.to_be_bytes());
+        entry.extend_from_slice(&(self.key.len()).to_be_bytes());
+        entry.extend_from_slice(&(self.value.len()).to_be_bytes());
+        // Key and Value:
+        entry.extend_from_slice(self.key.as_slice());
+        entry.extend_from_slice(self.value.as_slice());
+
+        entry
+    }
+
     pub fn add_to_index(&self, file: PathBuf, index: &mut HashMap<String, KeyData>) {
         let key = std::str::from_utf8(&self.key).unwrap().to_string();
         let key_data = KeyData {

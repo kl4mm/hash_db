@@ -3,6 +3,7 @@ use std::io::{
     self, BufRead, BufReader as SyncBufReader, BufWriter as SyncBufWriter, ErrorKind, SeekFrom,
     Write,
 };
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hash_db::command::Command;
@@ -24,10 +25,11 @@ async fn main() -> io::Result<()> {
 
         match Command::from_str(&buf) {
             Command::Insert(k, v) => {
+                let active_file = PathBuf::from("db/log");
                 let log = OpenOptions::new()
                     .append(true)
                     .create(true)
-                    .open("db/log") // TODO: get latest log file
+                    .open(&active_file)
                     .await?;
 
                 // Get current time
@@ -51,7 +53,7 @@ async fn main() -> io::Result<()> {
                 index.insert(
                     k.into(),
                     KeyData {
-                        file: "db/log".into(), // TODO: get latest log file,
+                        file: active_file,
                         value_s: v.len() as u64,
                         pos: position,
                         time,
@@ -63,10 +65,7 @@ async fn main() -> io::Result<()> {
             }
             Command::Get(k) => {
                 if let Some(key_data) = index.get(k) {
-                    let log = OpenOptions::new()
-                        .read(true)
-                        .open(&key_data.file) // TODO: get latest log file
-                        .await?;
+                    let log = OpenOptions::new().read(true).open(&key_data.file).await?;
 
                     // Find start of entry
                     let mut reader = BufReader::new(log);
@@ -102,7 +101,6 @@ async fn main() -> io::Result<()> {
 pub async fn bootstrap() -> io::Result<HashMap<String, KeyData>> {
     let mut ret = HashMap::new();
 
-    // TODO: loop over directory, check for hint files, then read log files
     let mut dir = match fs::read_dir("db").await {
         Ok(d) => d,
         Err(e) if e.kind() == ErrorKind::NotFound => {
@@ -115,7 +113,7 @@ pub async fn bootstrap() -> io::Result<HashMap<String, KeyData>> {
     while let Some(file) = dir.next_entry().await? {
         eprintln!("Parsing: {:?}", file.path());
         if file.path().ends_with("_hint") {
-            // parse hint file
+            // TODO: parse hint files
             eprintln!("Unimplemented: parse hint files");
             continue;
         }
