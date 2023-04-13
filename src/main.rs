@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::io::{
-    self, BufRead, BufReader as SyncBufReader, BufWriter as SyncBufWriter, SeekFrom, Write,
+    self, BufRead, BufReader as SyncBufReader, BufWriter as SyncBufWriter, ErrorKind, SeekFrom,
+    Write,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hash_db::command::Command;
 use hash_db::entry::{Entry, KeyData};
-use tokio::fs::OpenOptions;
+use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
 
 #[tokio::main]
@@ -26,7 +27,7 @@ async fn main() -> io::Result<()> {
                 let log = OpenOptions::new()
                     .append(true)
                     .create(true)
-                    .open("log") // TODO: get latest log file
+                    .open("db/log") // TODO: get latest log file
                     .await?;
 
                 // Get current time
@@ -50,7 +51,7 @@ async fn main() -> io::Result<()> {
                 index.insert(
                     k.into(),
                     KeyData {
-                        file: "log".into(), // TODO: get latest log file,
+                        file: "db/log".into(), // TODO: get latest log file,
                         value_s: v.len() as u64,
                         pos: position,
                         time,
@@ -102,11 +103,31 @@ pub async fn bootstrap() -> io::Result<HashMap<String, KeyData>> {
     let mut ret = HashMap::new();
 
     // TODO: loop over directory, check for hint files, then read log files
-    let log = OpenOptions::new().read(true).open("log").await?;
-    let mut reader = BufReader::new(log);
+    let mut dir = match fs::read_dir("db").await {
+        Ok(d) => d,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            fs::create_dir("db").await?;
+            fs::read_dir("db").await?
+        }
+        Err(e) => panic!("{}", e),
+    };
 
-    while let Some(entry) = Entry::read(&mut reader).await {
-        entry.add_to_index("log".into(), &mut index);
+    while let Some(file) = dir.next_entry().await? {
+        eprintln!("Parsing: {:?}", file.path());
+        if file.path().ends_with("_hint") {
+            // parse hint file
+            eprintln!("Unimplemented: parse hint files");
+            continue;
+        }
+
+        if file.path().starts_with("db/log") {
+            let log = OpenOptions::new().read(true).open(file.path()).await?;
+            let mut reader = BufReader::new(log);
+
+            while let Some(entry) = Entry::read(&mut reader).await {
+                entry.add_to_index(file.path(), &mut ret);
+            }
+        }
     }
 
     Ok(ret)

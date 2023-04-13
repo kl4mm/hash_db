@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use tokio::io::{AsyncBufRead, AsyncReadExt, AsyncSeekExt};
 
@@ -13,7 +13,7 @@ pub struct Entry {
 }
 
 pub struct KeyData {
-    pub file: String,
+    pub file: PathBuf,
     pub value_s: u64,
     pub pos: u64,
     pub time: u64,
@@ -78,7 +78,7 @@ impl Entry {
         entry
     }
 
-    pub fn add_to_index(&self, file: String, index: &mut HashMap<String, KeyData>) {
+    pub fn add_to_index(&self, file: PathBuf, index: &mut HashMap<String, KeyData>) {
         let key = std::str::from_utf8(&self.key).unwrap().to_string();
         let key_data = KeyData {
             file,
