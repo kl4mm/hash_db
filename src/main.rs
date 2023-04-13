@@ -5,14 +5,13 @@ use std::io::{
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use hash_db::command::Command;
-use hash_db::entry::{self, Entry, KeyData};
+use hash_db::entry::{Entry, KeyData};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let mut index: HashMap<String, KeyData> = HashMap::new();
-    entry::bootstrap(&mut index).await?;
+    let mut index = bootstrap().await?;
 
     let mut stdin = SyncBufReader::new(io::stdin());
     let mut stdout = SyncBufWriter::new(io::stdout());
@@ -97,4 +96,18 @@ async fn main() -> io::Result<()> {
 
         buf.clear();
     }
+}
+
+pub async fn bootstrap() -> io::Result<HashMap<String, KeyData>> {
+    let mut ret = HashMap::new();
+
+    // TODO: loop over directory, check for hint files, then read log files
+    let log = OpenOptions::new().read(true).open("log").await?;
+    let mut reader = BufReader::new(log);
+
+    while let Some(entry) = Entry::read(&mut reader).await {
+        entry.add_to_index("log".into(), &mut index);
+    }
+
+    Ok(ret)
 }

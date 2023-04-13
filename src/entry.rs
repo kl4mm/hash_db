@@ -1,8 +1,6 @@
 use std::collections::HashMap;
-use std::io;
 
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncBufRead, AsyncReadExt, AsyncSeekExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncReadExt, AsyncSeekExt};
 
 pub struct Entry {
     time: u64,
@@ -91,16 +89,4 @@ impl Entry {
 
         index.insert(key, key_data);
     }
-}
-
-pub async fn bootstrap(index: &mut HashMap<String, KeyData>) -> io::Result<()> {
-    // TODO: loop over directory, check for hint files, then read log files
-    let log = OpenOptions::new().read(true).open("log").await?;
-    let mut reader = BufReader::new(log);
-
-    while let Some(entry) = Entry::read(&mut reader).await {
-        entry.add_to_index("log".into(), index);
-    }
-
-    Ok(())
 }
