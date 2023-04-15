@@ -10,16 +10,17 @@ use tokio::io::BufReader;
 use crate::entry::{Entry, KeyData};
 
 const MAX_FILE_SIZE: u64 = 64;
+const DB_PATH: &str = "db/";
 
 pub async fn bootstrap() -> io::Result<HashMap<String, KeyData>> {
     let mut ret = HashMap::new();
 
     // Try to open db/, create it if it doesn't exist
-    let mut dir = match fs::read_dir("db").await {
+    let mut dir = match fs::read_dir(DB_PATH).await {
         Ok(d) => d,
         Err(e) if e.kind() == ErrorKind::NotFound => {
-            fs::create_dir("db").await?;
-            fs::read_dir("db").await?
+            fs::create_dir(DB_PATH).await?;
+            fs::read_dir(DB_PATH).await?
         }
         Err(e) => panic!("{}", e),
     };
@@ -44,11 +45,11 @@ pub async fn bootstrap() -> io::Result<HashMap<String, KeyData>> {
     Ok(ret)
 }
 
-/// Returns latest file and file len
-/// Will create a new file if db/log is greater than MAX_FILE_SIZE
+/// Returns latest file, file size and path
+/// Will create a new file if latest file is greater than MAX_FILE_SIZE
 pub async fn open_latest() -> io::Result<(File, u64, PathBuf)> {
     // Get the latest created dir in db/
-    let mut dir = fs::read_dir("db").await.expect("Couldn't access db");
+    let mut dir = fs::read_dir(DB_PATH).await.expect("Couldn't access db");
 
     // Get the latest file:
     let mut latest_time = UNIX_EPOCH;
@@ -84,7 +85,7 @@ pub async fn open_latest() -> io::Result<(File, u64, PathBuf)> {
         .to_string();
 
     let mut file_path = PathBuf::new();
-    file_path.push("db/");
+    file_path.push(DB_PATH);
     file_path.push(file_name);
 
     let file = OpenOptions::new()
