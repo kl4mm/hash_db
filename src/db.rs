@@ -37,8 +37,14 @@ pub async fn bootstrap() -> io::Result<HashMap<String, KeyData>> {
         let open = OpenOptions::new().read(true).open(file.path()).await?;
         let mut reader = BufReader::new(open);
 
+        // Add to index only if the entry hasn't been deleted
         while let Some(entry) = Entry::read(&mut reader).await {
-            entry.add_to_index(file.path(), &mut ret);
+            if entry.delete {
+                ret.remove(std::str::from_utf8(&entry.key).unwrap());
+                continue;
+            }
+
+            entry.add_to_index(&mut ret, file.path());
         }
     }
 

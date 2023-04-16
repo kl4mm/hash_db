@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 use tokio::io::{AsyncBufRead, AsyncReadExt, AsyncSeekExt};
 
 pub struct Entry {
+    pub delete: bool,
     time: u64,
     key_s: u64,
     value_s: u64,
@@ -25,6 +26,14 @@ impl Entry {
         T: AsyncBufRead + AsyncSeekExt + Unpin,
     {
         let pos = reader.stream_position().await.unwrap();
+
+        // First byte indicates if entry was deleted
+        let delete = match reader.read_u8().await {
+            Ok(d) if d == 0 => false,
+            Ok(d) if d == 1 => true,
+            Ok(_) => panic!("Delete is neither 0 nor 1"),
+            Err(_) => return None,
+        };
 
         // Read the timestamp, key len and value len
         let time = match reader.read_u64().await {
@@ -55,6 +64,7 @@ impl Entry {
         };
 
         Some(Self {
+            delete,
             time,
             key_s,
             value_s,
@@ -67,10 +77,14 @@ impl Entry {
 
     pub fn new_bytes(k: &str, v: &str, time: u64) -> Vec<u8> {
         let mut entry: Vec<u8> = Vec::new();
-        // timestamp, key len and value len occupy 8 bytes each
+        // Delete
+        entry.extend_from_slice(&[0]);
+
+        // Timestamp, key len and value len occupy 8 bytes each
         entry.extend_from_slice(&time.to_be_bytes());
         entry.extend_from_slice(&(k.len()).to_be_bytes());
         entry.extend_from_slice(&(v.len()).to_be_bytes());
+
         // Key and Value:
         entry.extend_from_slice(k.as_bytes());
         entry.extend_from_slice(v.as_bytes());
@@ -78,31 +92,7 @@ impl Entry {
         entry
     }
 
-    // pub fn new(k: &str, v: &str, time: u64, pos: u64) -> Self {
-    //     Self {
-    //         time,
-    //         key_s: k.len() as u64,
-    //         value_s: v.len() as u64,
-    //         key: k.as_bytes().to_vec(),
-    //         value: v.as_bytes().to_vec(),
-    //         pos,
-    //     }
-    // }
-
-    // pub fn as_bytes(&self) -> Vec<u8> {
-    //     let mut entry: Vec<u8> = Vec::new();
-    //     // timestamp, key len and value len occupy 8 bytes each
-    //     entry.extend_from_slice(&self.time.to_be_bytes());
-    //     entry.extend_from_slice(&(self.key.len()).to_be_bytes());
-    //     entry.extend_from_slice(&(self.value.len()).to_be_bytes());
-    //     // Key and Value:
-    //     entry.extend_from_slice(self.key.as_slice());
-    //     entry.extend_from_slice(self.value.as_slice());
-
-    //     entry
-    // }
-
-    pub fn add_to_index(&self, file: PathBuf, index: &mut HashMap<String, KeyData>) {
+    pub fn add_to_index(&self, index: &mut HashMap<String, KeyData>, file: PathBuf) {
         let key = std::str::from_utf8(&self.key).unwrap().to_string();
         let key_data = KeyData {
             file,
