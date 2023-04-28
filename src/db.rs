@@ -1,29 +1,35 @@
 use std::collections::HashMap;
 use std::io::{self, ErrorKind};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tokio::fs::OpenOptions;
 use tokio::fs::{self, File};
+use tokio::fs::{OpenOptions, ReadDir};
 use tokio::io::BufReader;
 
 use crate::entry::{Entry, KeyData};
 
 const MAX_FILE_SIZE: u64 = 64;
-const DB_PATH: &str = "db/";
+pub const DB_PATH: &str = "db/";
+
+pub async fn open_db_dir(db_path: &str) -> io::Result<ReadDir> {
+    // Try to open db/, create it if it doesn't exist
+    let dir = match fs::read_dir(db_path).await {
+        Ok(d) => d,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            fs::create_dir(db_path).await?;
+            fs::read_dir(db_path).await?
+        }
+        Err(e) => panic!("{}", e),
+    };
+
+    Ok(dir)
+}
 
 pub async fn bootstrap() -> io::Result<HashMap<String, KeyData>> {
     let mut ret = HashMap::new();
 
-    // Try to open db/, create it if it doesn't exist
-    let mut dir = match fs::read_dir(DB_PATH).await {
-        Ok(d) => d,
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            fs::create_dir(DB_PATH).await?;
-            fs::read_dir(DB_PATH).await?
-        }
-        Err(e) => panic!("{}", e),
-    };
+    let mut dir = open_db_dir(DB_PATH).await?;
 
     // Parse each file inside db/
     while let Some(file) = dir.next_entry().await? {
@@ -51,11 +57,9 @@ pub async fn bootstrap() -> io::Result<HashMap<String, KeyData>> {
     Ok(ret)
 }
 
-/// Returns latest file, file size and path
-/// Will create a new file if latest file is greater than MAX_FILE_SIZE
-pub async fn open_latest() -> io::Result<(File, u64, PathBuf)> {
+pub async fn get_latest_file(db_path: &str) -> io::Result<Option<PathBuf>> {
     // Get the latest created dir in db/
-    let mut dir = fs::read_dir(DB_PATH).await.expect("Couldn't access db");
+    let mut dir = fs::read_dir(db_path).await.expect("Couldn't access db");
 
     // Get the latest file:
     let mut latest_time = UNIX_EPOCH;
@@ -69,9 +73,18 @@ pub async fn open_latest() -> io::Result<(File, u64, PathBuf)> {
         }
     }
 
+    match latest_file {
+        Some(entry) => Ok(Some(entry.path())),
+        None => Ok(None),
+    }
+}
+
+/// Returns latest file, file size and path
+/// Will create a new file if latest file is greater than MAX_FILE_SIZE
+pub async fn open_latest() -> io::Result<(File, u64, PathBuf)> {
     // Return the file if its less than MAX_FILE_SIZE
-    if let Some(file) = latest_file {
-        let file_path = PathBuf::from(file.path());
+    if let Some(path) = get_latest_file(DB_PATH).await? {
+        let file_path = PathBuf::from(path);
         let file = OpenOptions::new().append(true).open(&file_path).await?;
         let position = file.metadata().await?.len();
 
@@ -101,4 +114,37 @@ pub async fn open_latest() -> io::Result<(File, u64, PathBuf)> {
         .await?;
 
     Ok((file, 0, file_path))
+}
+
+async fn clean_up() -> io::Result<()> {
+    loop {
+        // Run clean up every 5 minutes
+        tokio::time::sleep(Duration::from_secs(60 * 5)).await;
+
+        let mut dir = open_db_dir(DB_PATH).await?;
+
+        while let Some(file) = dir.next_entry().await? {
+            // Don't clean up hint files, delete any later if needed
+            if file.path().ends_with("_hint") {
+                continue;
+            }
+
+            // Skip if latest file
+            // TODO: reading dir each iteration
+            match get_latest_file(DB_PATH).await? {
+                Some(path) if file.path() == path => continue,
+                _ => {}
+            }
+
+            // Iterate over each entry, see what isn't in the keydir
+            // Create a new file without those entries, update the keydir
+            // Remove old file
+
+            let file = OpenOptions::new().read(true).open(file.path()).await?;
+            let mut reader = BufReader::new(file);
+            while let Some(entry) = Entry::read(&mut reader).await {
+                // TODO
+            }
+        }
+    }
 }

@@ -54,7 +54,7 @@ async fn main() -> io::Result<()> {
                 stdout.flush()?;
             }
             Command::Delete(k) => {
-                if let Some(key_data) = index.get(k) {
+                if let Some(key_data) = index.remove(k) {
                     let mut file = OpenOptions::new().write(true).open(&key_data.file).await?;
 
                     // Find start of entry
@@ -64,9 +64,6 @@ async fn main() -> io::Result<()> {
                     let mut writer = BufWriter::new(file);
                     writer.write_u8(1).await?;
                     writer.flush().await?;
-
-                    // Delete from index:
-                    index.remove(k);
 
                     // Write to stdout
                     stdout.write(b"OK\n")?;
