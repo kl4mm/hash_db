@@ -5,13 +5,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hash_db::command::Command;
 use hash_db::db;
-use hash_db::entry::{Entry, KeyData};
+use hash_db::entry::Entry;
+use hash_db::key_dir::{self, KeyData};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let mut index = db::bootstrap().await?;
+    let key_dir = key_dir::bootstrap().await?;
 
     let mut stdin = SyncBufReader::new(io::stdin());
     let mut stdout = SyncBufWriter::new(io::stdout());
@@ -40,10 +41,10 @@ async fn main() -> io::Result<()> {
                 writer.flush().await?;
 
                 // Insert the key and offset to index
-                index.insert(
+                key_dir.write().await.insert(
                     k.into(),
                     KeyData {
-                        file: file_path,
+                        path: file_path,
                         value_s: v.len() as u64,
                         pos: position,
                         time,
@@ -54,8 +55,8 @@ async fn main() -> io::Result<()> {
                 stdout.flush()?;
             }
             Command::Delete(k) => {
-                if let Some(key_data) = index.remove(k) {
-                    let mut file = OpenOptions::new().write(true).open(&key_data.file).await?;
+                if let Some(key_data) = key_dir.write().await.remove(k.into()) {
+                    let mut file = OpenOptions::new().write(true).open(&key_data.path).await?;
 
                     // Find start of entry
                     file.seek(SeekFrom::Start(key_data.pos)).await?;
@@ -71,8 +72,8 @@ async fn main() -> io::Result<()> {
                 }
             }
             Command::Get(k) => {
-                if let Some(key_data) = index.get(k) {
-                    let file = OpenOptions::new().read(true).open(&key_data.file).await?;
+                if let Some(key_data) = key_dir.read().await.get(k) {
+                    let file = OpenOptions::new().read(true).open(&key_data.path).await?;
 
                     // Find start of entry
                     let mut reader = BufReader::new(file);

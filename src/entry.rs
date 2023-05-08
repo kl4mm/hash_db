@@ -1,6 +1,8 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{io, path::PathBuf};
 
-use tokio::io::{AsyncBufRead, AsyncReadExt, AsyncSeekExt};
+use tokio::io::{AsyncBufRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+
+use crate::key_dir::{KeyData, KeyDirMap};
 
 pub struct Entry {
     pub delete: bool,
@@ -11,13 +13,6 @@ pub struct Entry {
     pub value: Vec<u8>,
 
     pos: u64,
-}
-
-pub struct KeyData {
-    pub file: PathBuf,
-    pub value_s: u64,
-    pub pos: u64,
-    pub time: u64,
 }
 
 impl Entry {
@@ -75,6 +70,21 @@ impl Entry {
         })
     }
 
+    pub async fn write<T>(&self, writer: &mut T) -> io::Result<()>
+    where
+        T: AsyncWriteExt + Unpin,
+    {
+        writer.write_u8(self.delete as u8).await?;
+        writer.write_u64(self.time).await?;
+        writer.write_u64(self.key_s).await?;
+        writer.write_u64(self.value_s).await?;
+        writer.write(self.key.as_slice()).await?;
+        writer.write(self.value.as_slice()).await?;
+        writer.flush().await?;
+
+        Ok(())
+    }
+
     pub fn new_bytes(k: &str, v: &str, time: u64) -> Vec<u8> {
         let mut entry: Vec<u8> = Vec::new();
         // Delete
@@ -92,15 +102,15 @@ impl Entry {
         entry
     }
 
-    pub fn add_to_index(&self, index: &mut HashMap<String, KeyData>, file: PathBuf) {
+    pub fn add_to_key_dir(&self, key_dir: &mut KeyDirMap, file: PathBuf) {
         let key = std::str::from_utf8(&self.key).unwrap().to_string();
         let key_data = KeyData {
-            file,
+            path: file,
             value_s: self.value_s,
             pos: self.pos,
             time: self.time,
         };
 
-        index.insert(key, key_data);
+        key_dir.insert(key, key_data);
     }
 }

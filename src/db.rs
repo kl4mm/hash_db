@@ -1,13 +1,15 @@
-use std::collections::HashMap;
 use std::io::{self, ErrorKind};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::fs::{self, File};
 use tokio::fs::{OpenOptions, ReadDir};
-use tokio::io::BufReader;
+use tokio::io::{BufReader, BufWriter};
+use tokio::sync::RwLock;
 
-use crate::entry::{Entry, KeyData};
+use crate::entry::Entry;
+use crate::key_dir::KeyDirMap;
 
 const MAX_FILE_SIZE: u64 = 64;
 pub const DB_PATH: &str = "db/";
@@ -24,37 +26,6 @@ pub async fn open_db_dir(db_path: &str) -> io::Result<ReadDir> {
     };
 
     Ok(dir)
-}
-
-pub async fn bootstrap() -> io::Result<HashMap<String, KeyData>> {
-    let mut ret = HashMap::new();
-
-    let mut dir = open_db_dir(DB_PATH).await?;
-
-    // Parse each file inside db/
-    while let Some(file) = dir.next_entry().await? {
-        eprintln!("Parsing: {:?}", file.path());
-        if file.path().ends_with("_hint") {
-            // TODO: parse hint files
-            eprintln!("Unimplemented: parse hint files");
-            continue;
-        }
-
-        let open = OpenOptions::new().read(true).open(file.path()).await?;
-        let mut reader = BufReader::new(open);
-
-        // Add to index only if the entry hasn't been deleted
-        while let Some(entry) = Entry::read(&mut reader).await {
-            if entry.delete {
-                ret.remove(std::str::from_utf8(&entry.key).unwrap());
-                continue;
-            }
-
-            entry.add_to_index(&mut ret, file.path());
-        }
-    }
-
-    Ok(ret)
 }
 
 pub async fn get_latest_file(db_path: &str) -> io::Result<Option<PathBuf>> {
@@ -116,23 +87,24 @@ pub async fn open_latest() -> io::Result<(File, u64, PathBuf)> {
     Ok((file, 0, file_path))
 }
 
-async fn clean_up() -> io::Result<()> {
+async fn clean_up(key_dir: Arc<RwLock<KeyDirMap>>) -> io::Result<()> {
     loop {
         // Run clean up every 5 minutes
-        tokio::time::sleep(Duration::from_secs(60 * 5)).await;
+        tokio::time::sleep(Duration::from_secs(5 * 60)).await;
 
         let mut dir = open_db_dir(DB_PATH).await?;
 
         while let Some(file) = dir.next_entry().await? {
+            let path = file.path();
             // Don't clean up hint files, delete any later if needed
-            if file.path().ends_with("_hint") {
+            if path.ends_with("_hint") {
                 continue;
             }
 
             // Skip if latest file
             // TODO: reading dir each iteration
             match get_latest_file(DB_PATH).await? {
-                Some(path) if file.path() == path => continue,
+                Some(latest_path) if latest_path == path => continue,
                 _ => {}
             }
 
@@ -140,10 +112,53 @@ async fn clean_up() -> io::Result<()> {
             // Create a new file without those entries, update the keydir
             // Remove old file
 
+            let mut keep = Vec::new();
+            let mut deleted = 0;
+
             let file = OpenOptions::new().read(true).open(file.path()).await?;
             let mut reader = BufReader::new(file);
+
+            // Read each entry in the file
             while let Some(entry) = Entry::read(&mut reader).await {
-                // TODO
+                let key = match std::str::from_utf8(&entry.key) {
+                    Ok(k) => k,
+                    Err(e) => {
+                        eprintln!("ERROR: key is not UTF-8 - {e}");
+                        continue;
+                    }
+                };
+
+                // Keep if path of entry matches path of current file
+                match key_dir.read().await.get(key) {
+                    Some(kd) => {
+                        if kd.path == path {
+                            keep.push(entry);
+                        } else {
+                            deleted += 1;
+                        }
+                    }
+                    None => deleted += 1,
+                }
+            }
+
+            if keep.len() == 0 {
+                // Delete file
+                fs::remove_file(path).await?;
+            }
+            if deleted > 0 {
+                // Rewrite file with keep
+                // TODO: creating a new file would affect the result of get_latest_file,
+                // there needs to be a different way to get the latest file
+                let new_file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("TODO")
+                    .await?;
+                let mut writer = BufWriter::new(new_file);
+
+                for entry in keep {
+                    entry.write(&mut writer).await?;
+                }
             }
         }
     }
