@@ -9,7 +9,7 @@ use tokio::io::{BufReader, BufWriter};
 use tokio::sync::RwLock;
 
 use crate::entry::Entry;
-use crate::key_dir::KeyDirMap;
+use crate::key_dir::{KeyDir, KeyDirMap};
 
 const MAX_FILE_SIZE: u64 = 64;
 pub const DB_PATH: &str = "db/";
@@ -33,28 +33,35 @@ pub async fn get_latest_file(db_path: &str) -> io::Result<Option<PathBuf>> {
     let mut dir = fs::read_dir(db_path).await.expect("Couldn't access db");
 
     // Get the latest file:
-    let mut latest_time = UNIX_EPOCH;
+    let mut latest_time = 0;
     let mut latest_file = None;
     while let Some(d) = dir.next_entry().await? {
-        let created_at = d.metadata().await?.created()?;
+        let file_name = d.file_name().into_string().expect("Invalid file name");
+        let parts: Vec<&str> = file_name.split('_').collect();
 
-        if created_at > latest_time {
-            latest_time = created_at;
-            latest_file = Some(d);
+        if parts.len() == 0 {
+            continue;
+        }
+
+        let timestamp: u64 = parts[0].parse().expect("Invalid file name");
+
+        if timestamp > latest_time {
+            latest_time = timestamp;
+            latest_file = Some(d.path());
         }
     }
 
     match latest_file {
-        Some(entry) => Ok(Some(entry.path())),
+        Some(path) => Ok(Some(path)),
         None => Ok(None),
     }
 }
 
 /// Returns latest file, file size and path
 /// Will create a new file if latest file is greater than MAX_FILE_SIZE
-pub async fn open_latest() -> io::Result<(File, u64, PathBuf)> {
+pub async fn open_latest(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<(File, u64, PathBuf)> {
     // Return the file if its less than MAX_FILE_SIZE
-    if let Some(path) = get_latest_file(DB_PATH).await? {
+    if let Some(path) = key_dir.read().await.latest() {
         let file_path = PathBuf::from(path);
         let file = OpenOptions::new().append(true).open(&file_path).await?;
         let position = file.metadata().await?.len();
@@ -84,10 +91,12 @@ pub async fn open_latest() -> io::Result<(File, u64, PathBuf)> {
         .open(&file_path)
         .await?;
 
+    key_dir.write().await.set_latest(file_path.clone());
+
     Ok((file, 0, file_path))
 }
 
-async fn clean_up(key_dir: Arc<RwLock<KeyDirMap>>) -> io::Result<()> {
+async fn clean_up(key_dir: Arc<RwLock<KeyDir>>) -> io::Result<()> {
     loop {
         // Run clean up every 5 minutes
         tokio::time::sleep(Duration::from_secs(5 * 60)).await;
@@ -102,9 +111,8 @@ async fn clean_up(key_dir: Arc<RwLock<KeyDirMap>>) -> io::Result<()> {
             }
 
             // Skip if latest file
-            // TODO: reading dir each iteration
-            match get_latest_file(DB_PATH).await? {
-                Some(latest_path) if latest_path == path => continue,
+            match key_dir.read().await.latest() {
+                Some(latest_path) if *latest_path == path => continue,
                 _ => {}
             }
 

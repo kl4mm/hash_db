@@ -24,7 +24,7 @@ async fn main() -> io::Result<()> {
 
         match Command::from_str(&buf) {
             Command::Insert(k, v) => {
-                let (file, position, file_path) = db::open_latest().await?;
+                let (file, position, file_path) = db::open_latest(&key_dir).await?;
 
                 // Get current time
                 let time = SystemTime::now()

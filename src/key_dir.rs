@@ -19,8 +19,39 @@ pub struct KeyData {
 
 pub type KeyDirMap = HashMap<String, KeyData>;
 
-pub async fn bootstrap() -> io::Result<Arc<RwLock<KeyDirMap>>> {
-    let mut ret = HashMap::new();
+pub struct KeyDir {
+    inner: KeyDirMap,
+    latest: Option<PathBuf>,
+}
+
+impl KeyDir {
+    pub fn get(&self, k: &str) -> Option<&KeyData> {
+        self.inner.get(k)
+    }
+
+    pub fn insert(&mut self, k: String, v: KeyData) -> Option<KeyData> {
+        self.inner.insert(k, v)
+    }
+
+    pub fn remove(&mut self, k: &str) -> Option<KeyData> {
+        self.inner.remove(k)
+    }
+
+    pub fn latest(&self) -> &Option<PathBuf> {
+        &self.latest
+    }
+
+    pub fn set_latest(&mut self, path: PathBuf) {
+        self.latest = Some(path);
+    }
+}
+
+pub async fn bootstrap() -> io::Result<Arc<RwLock<KeyDir>>> {
+    let mut ret = KeyDir {
+        inner: HashMap::new(),
+        latest: None,
+    };
+    ret.latest = db::get_latest_file(db::DB_PATH).await?;
 
     let mut dir = db::open_db_dir(db::DB_PATH).await?;
 
@@ -43,7 +74,7 @@ pub async fn bootstrap() -> io::Result<Arc<RwLock<KeyDirMap>>> {
                 continue;
             }
 
-            entry.add_to_key_dir(&mut ret, file.path());
+            entry.add_to_key_dir(&mut ret.inner, file.path());
         }
     }
 
