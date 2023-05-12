@@ -104,7 +104,7 @@ async fn clean_up(key_dir: Arc<RwLock<KeyDir>>) -> io::Result<()> {
         let mut dir = open_db_dir(DB_PATH).await?;
 
         while let Some(file) = dir.next_entry().await? {
-            let path = file.path();
+            let mut path = file.path();
             // Don't clean up hint files, delete any later if needed
             if path.ends_with("_hint") {
                 continue;
@@ -149,21 +149,57 @@ async fn clean_up(key_dir: Arc<RwLock<KeyDir>>) -> io::Result<()> {
                 }
             }
 
+            // Nothing to keep, remove file
             if keep.len() == 0 {
                 // Delete file
                 fs::remove_file(path).await?;
+                continue;
             }
+
+            // Rewrite file with entries to keep
             if deleted > 0 {
-                // Rewrite file with keep
-                // TODO: creating a new file would affect the result of get_latest_file,
-                // there needs to be a different way to get the latest file
+                let file_name = match path.file_name() {
+                    Some(name) => name.to_owned().into_string().expect("Invalid file name"),
+                    None => {
+                        eprintln!("ERROR: Path has no file name");
+                        continue;
+                    }
+                };
+
+                let parts: Vec<&str> = file_name.split('_').collect();
+
+                // Get the version of the file
+                let version;
+                if parts.len() == 1 {
+                    version = 1
+                } else if parts.len() == 2 {
+                    let current_version: u64 = match parts[1].parse() {
+                        Ok(v) => v,
+                        Err(e) => {
+                            eprintln!("ERROR: file version could not be parsed, setting version to 1: {e}");
+                            0
+                        }
+                    };
+
+                    version = current_version + 1;
+                } else {
+                    eprintln!("ERROR: parts len neither 1 nor 2, setting version to 1");
+                    version = 1
+                };
+
+                // Update path with new file name
+                let new_file_name = format!("{}_{}", parts[0], version);
+                path.pop();
+                path.push(new_file_name);
+
                 let new_file = OpenOptions::new()
                     .create(true)
                     .append(true)
-                    .open("TODO")
+                    .open(path)
                     .await?;
                 let mut writer = BufWriter::new(new_file);
 
+                // TODO: add new file name to key dir
                 for entry in keep {
                     entry.write(&mut writer).await?;
                 }
