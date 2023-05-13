@@ -12,7 +12,7 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let key_dir = key_dir::bootstrap().await?;
+    let key_dir = key_dir::bootstrap(db::DB_PATH).await?;
 
     let mut stdin = SyncBufReader::new(io::stdin());
     let mut stdout = SyncBufWriter::new(io::stdout());

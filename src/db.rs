@@ -9,7 +9,7 @@ use tokio::io::{BufReader, BufWriter};
 use tokio::sync::RwLock;
 
 use crate::entry::Entry;
-use crate::key_dir::{KeyDir, KeyDirMap};
+use crate::key_dir::KeyDir;
 
 const MAX_FILE_SIZE: u64 = 64;
 pub const DB_PATH: &str = "db/";

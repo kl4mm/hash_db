@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::hash_map::{HashMap, Iter};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use crate::db;
 use crate::entry::Entry;
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct KeyData {
     pub path: PathBuf,
     pub value_s: u64,
@@ -44,16 +44,19 @@ impl KeyDir {
     pub fn set_latest(&mut self, path: PathBuf) {
         self.latest = Some(path);
     }
+
+    pub fn iter(&self) -> Iter<String, KeyData> {
+        self.inner.iter()
+    }
 }
 
-pub async fn bootstrap() -> io::Result<Arc<RwLock<KeyDir>>> {
+pub async fn bootstrap(db_path: &str) -> io::Result<Arc<RwLock<KeyDir>>> {
     let mut ret = KeyDir {
         inner: HashMap::new(),
-        latest: None,
+        latest: db::get_latest_file(db_path).await?,
     };
-    ret.latest = db::get_latest_file(db::DB_PATH).await?;
 
-    let mut dir = db::open_db_dir(db::DB_PATH).await?;
+    let mut dir = db::open_db_dir(db_path).await?;
 
     // Parse each file inside db/
     while let Some(file) = dir.next_entry().await? {
@@ -79,4 +82,107 @@ pub async fn bootstrap() -> io::Result<Arc<RwLock<KeyDir>>> {
     }
 
     Ok(Arc::new(RwLock::new(ret)))
+}
+
+#[cfg(test)]
+mod test {
+    use std::{io, path::PathBuf};
+
+    use tokio::fs::OpenOptions;
+    use tokio::io::BufWriter;
+
+    use crate::key_dir::KeyData;
+    use crate::{db, entry::Entry, key_dir};
+
+    const TEST_DB_PATH: &str = "test_db/";
+
+    fn expected_test_db_path() -> PathBuf {
+        let mut path = PathBuf::new();
+        path.push(TEST_DB_PATH);
+        path.push("1000000");
+
+        path
+    }
+
+    async fn setup() -> io::Result<()> {
+        let entries: Vec<Entry> = vec![
+            Entry::new(false, 10, 5, 5, b"hello".to_vec(), b"world".to_vec(), 0),
+            Entry::new(false, 20, 4, 3, b"test".to_vec(), b"key".to_vec(), 35),
+            Entry::new(false, 30, 5, 5, b"apple".to_vec(), b"fruit".to_vec(), 67),
+            Entry::new(true, 30, 7, 3, b"deleted".to_vec(), b"key".to_vec(), 101),
+        ];
+
+        // Will xreate if path doesn't exist
+        let _ = db::open_db_dir(TEST_DB_PATH).await?;
+
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(expected_test_db_path())
+            .await?;
+        let mut writer = BufWriter::new(file);
+
+        for entry in entries {
+            entry.write(&mut writer).await?;
+        }
+
+        Ok(())
+    }
+
+    struct CleanUp;
+    impl Drop for CleanUp {
+        fn drop(&mut self) {
+            if let Err(e) = std::fs::remove_dir_all(TEST_DB_PATH) {
+                eprintln!("ERROR: could not remove test db dir- {e}")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap() -> io::Result<()> {
+        setup().await?;
+        let _cu = CleanUp;
+
+        let res = key_dir::bootstrap(TEST_DB_PATH).await?;
+
+        let res = res.read().await;
+        for (k, v) in res.iter() {
+            match k.as_str() {
+                "hello" => {
+                    assert!(
+                        v == &KeyData {
+                            path: expected_test_db_path(),
+                            value_s: 5,
+                            pos: 0,
+                            time: 10
+                        }
+                    );
+                }
+                "test" => {
+                    assert!(
+                        v == &KeyData {
+                            path: expected_test_db_path(),
+                            value_s: 3,
+                            pos: 35,
+                            time: 20
+                        }
+                    );
+                }
+                "apple" => {
+                    dbg!("{}", &v);
+                    assert!(
+                        v == &KeyData {
+                            path: expected_test_db_path(),
+                            value_s: 5,
+                            pos: 67,
+                            time: 30
+                        }
+                    );
+                }
+                _ => panic!("Key should not exist"),
+            }
+        }
+
+        Ok(())
+    }
 }

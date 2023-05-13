@@ -1,6 +1,6 @@
 use std::{io, path::PathBuf};
 
-use tokio::io::{AsyncBufRead, AsyncReadExt, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::key_dir::{KeyData, KeyDirMap};
 
@@ -16,6 +16,26 @@ pub struct Entry {
 }
 
 impl Entry {
+    pub fn new(
+        delete: bool,
+        time: u64,
+        key_s: u64,
+        value_s: u64,
+        key: Vec<u8>,
+        value: Vec<u8>,
+        pos: u64,
+    ) -> Self {
+        Self {
+            delete,
+            time,
+            key_s,
+            value_s,
+            key,
+            value,
+            pos,
+        }
+    }
+
     pub async fn read<T>(reader: &mut T) -> Option<Entry>
     where
         T: AsyncBufRead + AsyncSeekExt + Unpin,
