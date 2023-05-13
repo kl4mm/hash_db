@@ -169,7 +169,6 @@ mod test {
                     );
                 }
                 "apple" => {
-                    dbg!("{}", &v);
                     assert!(
                         v == &KeyData {
                             path: expected_test_db_path(),
