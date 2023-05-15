@@ -53,7 +53,7 @@ impl KeyDir {
 pub async fn bootstrap(db_path: &str) -> io::Result<Arc<RwLock<KeyDir>>> {
     let mut ret = KeyDir {
         inner: HashMap::new(),
-        latest: db::get_latest_file(db_path).await?,
+        latest: db::get_active_file(db_path).await?,
     };
 
     let mut dir = db::open_db_dir(db_path).await?;
@@ -94,11 +94,11 @@ mod test {
     use crate::key_dir::KeyData;
     use crate::{db, entry::Entry, key_dir};
 
-    const TEST_DB_PATH: &str = "test_db/";
+    const TEST_KEY_DIR_PATH: &str = "test_key_dir_db/";
 
     fn expected_test_db_path() -> PathBuf {
         let mut path = PathBuf::new();
-        path.push(TEST_DB_PATH);
+        path.push(TEST_KEY_DIR_PATH);
         path.push("1000000");
 
         path
@@ -112,8 +112,8 @@ mod test {
             Entry::new(true, 30, 7, 3, b"deleted".to_vec(), b"key".to_vec(), 101),
         ];
 
-        // Will xreate if path doesn't exist
-        let _ = db::open_db_dir(TEST_DB_PATH).await?;
+        // Will create if path doesn't exist
+        let _ = db::open_db_dir(TEST_KEY_DIR_PATH).await?;
 
         let file = OpenOptions::new()
             .create(true)
@@ -129,11 +129,11 @@ mod test {
         Ok(())
     }
 
-    struct CleanUp;
+    struct CleanUp(&'static str);
     impl Drop for CleanUp {
         fn drop(&mut self) {
-            if let Err(e) = std::fs::remove_dir_all(TEST_DB_PATH) {
-                eprintln!("ERROR: could not remove test db dir- {e}")
+            if let Err(e) = std::fs::remove_dir_all(self.0) {
+                eprintln!("ERROR: could not remove {} - {}", self.0, e);
             }
         }
     }
@@ -141,9 +141,9 @@ mod test {
     #[tokio::test]
     async fn test_bootstrap() -> io::Result<()> {
         setup().await?;
-        let _cu = CleanUp;
+        let _cu = CleanUp(TEST_KEY_DIR_PATH);
 
-        let res = key_dir::bootstrap(TEST_DB_PATH).await?;
+        let res = key_dir::bootstrap(TEST_KEY_DIR_PATH).await?;
 
         let res = res.read().await;
         for (k, v) in res.iter() {

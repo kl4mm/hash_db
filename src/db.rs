@@ -28,7 +28,7 @@ pub async fn open_db_dir(db_path: &str) -> io::Result<ReadDir> {
     Ok(dir)
 }
 
-pub async fn get_latest_file(db_path: &str) -> io::Result<Option<PathBuf>> {
+pub async fn get_active_file(db_path: &str) -> io::Result<Option<PathBuf>> {
     // Get the latest created dir in db/
     let mut dir = fs::read_dir(db_path).await.expect("Couldn't access db");
 
@@ -37,14 +37,13 @@ pub async fn get_latest_file(db_path: &str) -> io::Result<Option<PathBuf>> {
     let mut latest_file = None;
     while let Some(d) = dir.next_entry().await? {
         let file_name = d.file_name().into_string().expect("Invalid file name");
-        let parts: Vec<&str> = file_name.split('_').collect();
 
+        let parts: Vec<&str> = file_name.split('_').collect();
         if parts.len() == 0 {
             continue;
         }
 
         let timestamp: u64 = parts[0].parse().expect("Invalid file name");
-
         if timestamp > latest_time {
             latest_time = timestamp;
             latest_file = Some(d.path());
@@ -205,5 +204,64 @@ async fn clean_up(key_dir: Arc<RwLock<KeyDir>>) -> io::Result<()> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::{io, path::PathBuf};
+
+    use tokio::fs::OpenOptions;
+
+    use crate::db;
+
+    const TEST_DB_PATH: &str = "test_db/";
+
+    struct CleanUp(&'static str);
+    impl Drop for CleanUp {
+        fn drop(&mut self) {
+            if let Err(e) = std::fs::remove_dir_all(self.0) {
+                eprintln!("ERROR: could not remove {} - {}", self.0, e);
+            }
+        }
+    }
+
+    async fn setup() -> io::Result<()> {
+        // Will create if path doesn't exist
+        let _ = db::open_db_dir(TEST_DB_PATH).await?;
+
+        let files = ["100_1", "200", "300_2", "400"];
+
+        for file in files {
+            let mut path = PathBuf::new();
+            path.push(TEST_DB_PATH);
+            path.push(file);
+
+            dbg!(&path);
+
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_active_file() -> io::Result<()> {
+        setup().await?;
+        let _cu = CleanUp(TEST_DB_PATH);
+
+        let got = db::get_active_file(TEST_DB_PATH).await?;
+
+        let mut expected = PathBuf::new();
+        expected.push(TEST_DB_PATH);
+        expected.push("400");
+
+        assert!(got == Some(expected));
+
+        Ok(())
     }
 }
