@@ -9,7 +9,7 @@ use tokio::io::{BufReader, BufWriter};
 use tokio::sync::RwLock;
 
 use crate::entry::Entry;
-use crate::key_dir::KeyDir;
+use crate::key_dir::{KeyData, KeyDir};
 
 const MAX_FILE_SIZE: u64 = 64;
 pub const DB_PATH: &str = "db/";
@@ -95,116 +95,129 @@ pub async fn open_latest(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<(File, u64
     Ok((file, 0, file_path))
 }
 
-async fn clean_up(key_dir: Arc<RwLock<KeyDir>>) -> io::Result<()> {
+async fn compaction_loop(key_dir: Arc<RwLock<KeyDir>>, interval: Duration) -> io::Result<()> {
     loop {
-        // Run clean up every 5 minutes
-        tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+        tokio::time::sleep(interval).await;
+        if let Err(e) = compaction(key_dir.clone()).await {
+            dbg!(e);
+        }
+    }
+}
 
-        let mut dir = open_db_dir(DB_PATH).await?;
+async fn compaction(key_dir: Arc<RwLock<KeyDir>>) -> io::Result<()> {
+    let mut dir = open_db_dir(DB_PATH).await?;
 
-        while let Some(file) = dir.next_entry().await? {
-            let mut path = file.path();
-            // Don't clean up hint files, delete any later if needed
-            if path.ends_with("_hint") {
-                continue;
+    while let Some(file) = dir.next_entry().await? {
+        let mut path = file.path();
+        // Don't clean up hint files, delete any later if needed
+        if path.ends_with("_hint") {
+            continue;
+        }
+
+        // Skip if latest file
+        match key_dir.read().await.latest() {
+            Some(latest_path) if *latest_path == path => continue,
+            _ => {}
+        }
+
+        // Iterate over each entry, see what isn't in the keydir
+        // Create a new file without those entries, update the keydir
+        // Remove old file
+
+        let mut keep = Vec::new();
+        let mut deleted = 0;
+
+        let file = OpenOptions::new().read(true).open(file.path()).await?;
+        let mut reader = BufReader::new(file);
+
+        // Read each entry in the file
+        while let Some(entry) = Entry::read(&mut reader).await {
+            let key = &entry.key;
+
+            // Keep if path of entry matches path of current file
+            match key_dir.read().await.get(key) {
+                Some(kd) => {
+                    if kd.path == path {
+                        keep.push(entry);
+                    } else {
+                        deleted += 1;
+                    }
+                }
+                None => deleted += 1,
             }
+        }
 
-            // Skip if latest file
-            match key_dir.read().await.latest() {
-                Some(latest_path) if *latest_path == path => continue,
-                _ => {}
-            }
+        // Nothing to keep, remove file
+        if keep.len() == 0 {
+            // Delete file
+            fs::remove_file(path).await?;
+            continue;
+        }
 
-            // Iterate over each entry, see what isn't in the keydir
-            // Create a new file without those entries, update the keydir
-            // Remove old file
+        // Rewrite file with entries to keep
+        if deleted > 0 {
+            let file_name = match path.file_name() {
+                Some(name) => name.to_owned().into_string().expect("Invalid file name"),
+                None => {
+                    eprintln!("ERROR: Path has no file name");
+                    continue;
+                }
+            };
 
-            let mut keep = Vec::new();
-            let mut deleted = 0;
+            let parts: Vec<&str> = file_name.split('_').collect();
 
-            let file = OpenOptions::new().read(true).open(file.path()).await?;
-            let mut reader = BufReader::new(file);
-
-            // Read each entry in the file
-            while let Some(entry) = Entry::read(&mut reader).await {
-                let key = match std::str::from_utf8(&entry.key) {
-                    Ok(k) => k,
+            // Get the version of the file
+            let version;
+            if parts.len() == 1 {
+                version = 1
+            } else if parts.len() == 2 {
+                let current_version: u64 = match parts[1].parse() {
+                    Ok(v) => v,
                     Err(e) => {
-                        eprintln!("ERROR: key is not UTF-8 - {e}");
-                        continue;
+                        eprintln!(
+                            "ERROR: file version could not be parsed, setting version to 1: {e}"
+                        );
+                        0
                     }
                 };
 
-                // Keep if path of entry matches path of current file
-                match key_dir.read().await.get(key) {
-                    Some(kd) => {
-                        if kd.path == path {
-                            keep.push(entry);
-                        } else {
-                            deleted += 1;
-                        }
-                    }
-                    None => deleted += 1,
-                }
-            }
+                version = current_version + 1;
+            } else {
+                eprintln!("ERROR: parts len neither 1 nor 2, setting version to 1");
+                version = 1
+            };
 
-            // Nothing to keep, remove file
-            if keep.len() == 0 {
-                // Delete file
-                fs::remove_file(path).await?;
-                continue;
-            }
+            // Update path with new file name
+            let new_file_name = format!("{}_{}", parts[0], version);
+            path.pop();
+            path.push(new_file_name);
 
-            // Rewrite file with entries to keep
-            if deleted > 0 {
-                let file_name = match path.file_name() {
-                    Some(name) => name.to_owned().into_string().expect("Invalid file name"),
-                    None => {
-                        eprintln!("ERROR: Path has no file name");
-                        continue;
-                    }
-                };
+            let mut writer = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .await?;
+            // let mut writer = BufWriter::new(writer);
 
-                let parts: Vec<&str> = file_name.split('_').collect();
+            // TODO: add new file name to key dir
+            for entry in keep {
+                let position = writer.metadata().await?.len();
+                entry.write(&mut writer).await?;
 
-                // Get the version of the file
-                let version;
-                if parts.len() == 1 {
-                    version = 1
-                } else if parts.len() == 2 {
-                    let current_version: u64 = match parts[1].parse() {
-                        Ok(v) => v,
-                        Err(e) => {
-                            eprintln!("ERROR: file version could not be parsed, setting version to 1: {e}");
-                            0
-                        }
-                    };
-
-                    version = current_version + 1;
-                } else {
-                    eprintln!("ERROR: parts len neither 1 nor 2, setting version to 1");
-                    version = 1
-                };
-
-                // Update path with new file name
-                let new_file_name = format!("{}_{}", parts[0], version);
-                path.pop();
-                path.push(new_file_name);
-
-                let new_file = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .await?;
-                let mut writer = BufWriter::new(new_file);
-
-                // TODO: add new file name to key dir
-                for entry in keep {
-                    entry.write(&mut writer).await?;
-                }
+                key_dir.write().await.insert(
+                    entry.key,
+                    KeyData {
+                        path: path.to_owned(),
+                        value_s: entry.value_s,
+                        pos: position,
+                        time: entry.time,
+                    },
+                );
             }
         }
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -213,9 +226,7 @@ mod test {
 
     use tokio::fs::OpenOptions;
 
-    use crate::db;
-
-    const TEST_DB_PATH: &str = "test_db/";
+    use crate::{db, key_dir};
 
     struct CleanUp(&'static str);
     impl Drop for CleanUp {
@@ -226,15 +237,17 @@ mod test {
         }
     }
 
-    async fn setup() -> io::Result<()> {
-        // Will create if path doesn't exist
-        let _ = db::open_db_dir(TEST_DB_PATH).await?;
+    #[tokio::test]
+    async fn test_get_active_file() -> io::Result<()> {
+        const DB_PATH: &str = "test_db_active_file/";
+
+        let _ = db::open_db_dir(DB_PATH).await?;
 
         let files = ["100_1", "200", "300_2", "400"];
 
         for file in files {
             let mut path = PathBuf::new();
-            path.push(TEST_DB_PATH);
+            path.push(DB_PATH);
             path.push(file);
 
             dbg!(&path);
@@ -246,22 +259,35 @@ mod test {
                 .await?;
         }
 
-        Ok(())
-    }
+        let _c = CleanUp(DB_PATH);
 
-    #[tokio::test]
-    async fn test_get_active_file() -> io::Result<()> {
-        setup().await?;
-        let _cu = CleanUp(TEST_DB_PATH);
-
-        let got = db::get_active_file(TEST_DB_PATH).await?;
+        let got = db::get_active_file(DB_PATH).await?;
 
         let mut expected = PathBuf::new();
-        expected.push(TEST_DB_PATH);
+        expected.push(DB_PATH);
         expected.push("400");
 
         assert!(got == Some(expected));
 
         Ok(())
+    }
+
+    // Cases:
+    // 1. File full of entries that have either been deleted, or updated
+    // and are active in newer files
+    // 2. File contains some entries that have either been deleted, or updated
+    // and are active in newer files
+    // 3. File untouched
+    #[tokio::test]
+    async fn test_compaction() {
+        const DB_PATH: &str = "test_db_compaction/";
+
+        let key_dir = key_dir::bootstrap(DB_PATH)
+            .await
+            .expect("key dir bootstrap failed");
+
+        // Setup DB
+
+        db::compaction(key_dir).await.expect("compaction failed");
     }
 }

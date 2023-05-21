@@ -48,6 +48,17 @@ impl KeyDir {
     pub fn iter(&self) -> Iter<String, KeyData> {
         self.inner.iter()
     }
+
+    pub fn insert_entry(&mut self, file: PathBuf, entry: &Entry) {
+        let key_data = KeyData {
+            path: file,
+            value_s: entry.value_s,
+            pos: entry.pos,
+            time: entry.time,
+        };
+
+        self.inner.insert(entry.key.to_owned(), key_data);
+    }
 }
 
 pub async fn bootstrap(db_path: &str) -> io::Result<Arc<RwLock<KeyDir>>> {
@@ -73,11 +84,11 @@ pub async fn bootstrap(db_path: &str) -> io::Result<Arc<RwLock<KeyDir>>> {
         // Add to index only if the entry hasn't been deleted
         while let Some(entry) = Entry::read(&mut reader).await {
             if entry.delete {
-                ret.remove(std::str::from_utf8(&entry.key).unwrap());
+                ret.remove(&entry.key);
                 continue;
             }
 
-            entry.add_to_key_dir(&mut ret.inner, file.path());
+            ret.insert_entry(file.path(), &entry);
         }
     }
 
@@ -106,10 +117,10 @@ mod test {
 
     async fn setup() -> io::Result<()> {
         let entries: Vec<Entry> = vec![
-            Entry::new(false, 10, 5, 5, b"hello".to_vec(), b"world".to_vec(), 0),
-            Entry::new(false, 20, 4, 3, b"test".to_vec(), b"key".to_vec(), 35),
-            Entry::new(false, 30, 5, 5, b"apple".to_vec(), b"fruit".to_vec(), 67),
-            Entry::new(true, 30, 7, 3, b"deleted".to_vec(), b"key".to_vec(), 101),
+            Entry::new(false, 10, 5, 5, "hello".into(), "world".into(), 0),
+            Entry::new(false, 20, 4, 3, "test".into(), "key".into(), 35),
+            Entry::new(false, 30, 5, 5, "apple".into(), "fruit".into(), 67),
+            Entry::new(true, 30, 7, 3, "deleted".into(), "key".into(), 101),
         ];
 
         // Will create if path doesn't exist

@@ -1,18 +1,16 @@
-use std::{io, path::PathBuf};
+use std::io;
 
 use tokio::io::{AsyncBufRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
-use crate::key_dir::{KeyData, KeyDirMap};
-
 pub struct Entry {
     pub delete: bool,
-    time: u64,
-    key_s: u64,
-    value_s: u64,
-    pub key: Vec<u8>,
-    pub value: Vec<u8>,
+    pub time: u64,
+    pub key_s: u64,
+    pub value_s: u64,
+    pub key: String,
+    pub value: String,
 
-    pos: u64,
+    pub pos: u64,
 }
 
 impl Entry {
@@ -21,8 +19,8 @@ impl Entry {
         time: u64,
         key_s: u64,
         value_s: u64,
-        key: Vec<u8>,
-        value: Vec<u8>,
+        key: String,
+        value: String,
         pos: u64,
     ) -> Self {
         Self {
@@ -67,14 +65,20 @@ impl Entry {
 
         // Read the key and value:
         let mut key = vec![0; key_s as usize];
-        match reader.read_exact(&mut key).await {
-            Ok(t) => t,
+        if let Err(_) = reader.read_exact(&mut key).await {
+            return None;
+        }
+        let key = match std::str::from_utf8(&key) {
+            Ok(k) => k.to_owned(),
             Err(_) => return None,
         };
 
         let mut value = vec![0; value_s as usize];
-        match reader.read_exact(&mut value).await {
-            Ok(t) => t,
+        if let Err(_) = reader.read_exact(&mut value).await {
+            return None;
+        }
+        let value = match std::str::from_utf8(&value) {
+            Ok(v) => v.to_owned(),
             Err(_) => return None,
         };
 
@@ -98,8 +102,8 @@ impl Entry {
         writer.write_u64(self.time).await?;
         writer.write_u64(self.key_s).await?;
         writer.write_u64(self.value_s).await?;
-        writer.write(self.key.as_slice()).await?;
-        writer.write(self.value.as_slice()).await?;
+        let res = writer.write(self.key.as_bytes()).await?;
+        writer.write(self.value.as_bytes()).await?;
         writer.flush().await?;
 
         Ok(())
@@ -120,17 +124,5 @@ impl Entry {
         entry.extend_from_slice(v.as_bytes());
 
         entry
-    }
-
-    pub fn add_to_key_dir(&self, key_dir: &mut KeyDirMap, file: PathBuf) {
-        let key = std::str::from_utf8(&self.key).unwrap().to_string();
-        let key_data = KeyData {
-            path: file,
-            value_s: self.value_s,
-            pos: self.pos,
-            time: self.time,
-        };
-
-        key_dir.insert(key, key_data);
     }
 }

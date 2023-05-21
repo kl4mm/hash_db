@@ -130,9 +130,9 @@ impl<'a> Command<'a> {
                         }
                     };
 
-                    write_to.write(&entry.key)?;
+                    write_to.write(&entry.key.as_bytes())?;
                     write_to.write(b" ")?;
-                    write_to.write(&entry.value)?;
+                    write_to.write(&entry.value.as_bytes())?;
                     write_to.write(b"\n")?;
                     write_to.flush()?;
                 }
