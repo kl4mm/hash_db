@@ -197,9 +197,7 @@ async fn compaction(key_dir: Arc<RwLock<KeyDir>>) -> io::Result<()> {
                 .append(true)
                 .open(&path)
                 .await?;
-            // let mut writer = BufWriter::new(writer);
 
-            // TODO: add new file name to key dir
             for entry in keep {
                 let position = writer.metadata().await?.len();
                 entry.write(&mut writer).await?;
@@ -226,7 +224,7 @@ mod test {
 
     use tokio::fs::OpenOptions;
 
-    use crate::{db, key_dir};
+    use crate::{command::Command, db, key_dir};
 
     struct CleanUp(&'static str);
     impl Drop for CleanUp {
@@ -279,15 +277,30 @@ mod test {
     // and are active in newer files
     // 3. File untouched
     #[tokio::test]
-    async fn test_compaction() {
+    async fn test_compaction() -> io::Result<()> {
         const DB_PATH: &str = "test_db_compaction/";
+
+        // Setup
+        let entries = [
+            ("key", "value"),
+            ("key", "value"),
+            ("key", "value"),
+            ("key", "value"),
+            ("key", "value"),
+        ];
+
+        let mut stdout = io::stdout().lock();
 
         let key_dir = key_dir::bootstrap(DB_PATH)
             .await
             .expect("key dir bootstrap failed");
 
-        // Setup DB
+        for entry in entries {
+            Command::insert(&key_dir, &mut stdout, entry.0, entry.1).await?;
+        }
 
         db::compaction(key_dir).await.expect("compaction failed");
+
+        Ok(())
     }
 }

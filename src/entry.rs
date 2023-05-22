@@ -102,7 +102,7 @@ impl Entry {
         writer.write_u64(self.time).await?;
         writer.write_u64(self.key_s).await?;
         writer.write_u64(self.value_s).await?;
-        let res = writer.write(self.key.as_bytes()).await?;
+        writer.write(self.key.as_bytes()).await?;
         writer.write(self.value.as_bytes()).await?;
         writer.flush().await?;
 
