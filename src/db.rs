@@ -1,5 +1,5 @@
 use std::io::{self, ErrorKind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,10 +11,10 @@ use tokio::sync::RwLock;
 use crate::entry::Entry;
 use crate::key_dir::{KeyData, KeyDir};
 
-const MAX_FILE_SIZE: u64 = 64;
-pub const DB_PATH: &str = "db/";
-
-pub async fn open_db_dir(db_path: &str) -> io::Result<ReadDir> {
+pub async fn open_db_dir<T>(db_path: T) -> io::Result<ReadDir>
+where
+    T: AsRef<Path> + Copy,
+{
     // Try to open db/, create it if it doesn't exist
     let dir = match fs::read_dir(db_path).await {
         Ok(d) => d,
@@ -65,7 +65,7 @@ pub async fn open_latest(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<(File, u64
         let file = OpenOptions::new().append(true).open(&file_path).await?;
         let position = file.metadata().await?.len();
 
-        if position < MAX_FILE_SIZE {
+        if position < key_dir.read().await.max_file_size() {
             return Ok((file, position, file_path));
         }
     }
@@ -80,8 +80,7 @@ pub async fn open_latest(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<(File, u64
         .as_millis()
         .to_string();
 
-    let mut file_path = PathBuf::new();
-    file_path.push(DB_PATH);
+    let mut file_path = key_dir.read().await.path().clone();
     file_path.push(file_name);
 
     let file = OpenOptions::new()
@@ -98,14 +97,14 @@ pub async fn open_latest(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<(File, u64
 async fn compaction_loop(key_dir: Arc<RwLock<KeyDir>>, interval: Duration) -> io::Result<()> {
     loop {
         tokio::time::sleep(interval).await;
-        if let Err(e) = compaction(key_dir.clone()).await {
+        if let Err(e) = compaction(&key_dir).await {
             dbg!(e);
         }
     }
 }
 
-async fn compaction(key_dir: Arc<RwLock<KeyDir>>) -> io::Result<()> {
-    let mut dir = open_db_dir(DB_PATH).await?;
+async fn compaction(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<()> {
+    let mut dir = open_db_dir(key_dir.read().await.path()).await?;
 
     while let Some(file) = dir.next_entry().await? {
         let mut path = file.path();
@@ -240,6 +239,7 @@ mod test {
         const DB_PATH: &str = "test_db_active_file/";
 
         let _ = db::open_db_dir(DB_PATH).await?;
+        let _c = CleanUp(DB_PATH);
 
         let files = ["100_1", "200", "300_2", "400"];
 
@@ -248,16 +248,12 @@ mod test {
             path.push(DB_PATH);
             path.push(file);
 
-            dbg!(&path);
-
             OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(path)
                 .await?;
         }
-
-        let _c = CleanUp(DB_PATH);
 
         let got = db::get_active_file(DB_PATH).await?;
 
@@ -279,8 +275,16 @@ mod test {
     #[tokio::test]
     async fn test_compaction() -> io::Result<()> {
         const DB_PATH: &str = "test_db_compaction/";
+        const MAX_FILE_SIZE: u64 = 256;
 
         // Setup
+        let _ = db::open_db_dir(DB_PATH).await?;
+        let _c = CleanUp(DB_PATH);
+
+        let key_dir = key_dir::bootstrap(DB_PATH, MAX_FILE_SIZE)
+            .await
+            .expect("key dir bootstrap failed");
+
         let entries = [
             ("key", "value"),
             ("key", "value"),
@@ -290,16 +294,11 @@ mod test {
         ];
 
         let mut stdout = io::stdout().lock();
-
-        let key_dir = key_dir::bootstrap(DB_PATH)
-            .await
-            .expect("key dir bootstrap failed");
-
         for entry in entries {
             Command::insert(&key_dir, &mut stdout, entry.0, entry.1).await?;
         }
 
-        db::compaction(key_dir).await.expect("compaction failed");
+        db::compaction(&key_dir).await.expect("compaction failed");
 
         Ok(())
     }

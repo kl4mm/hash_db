@@ -22,6 +22,8 @@ pub type KeyDirMap = HashMap<String, KeyData>;
 pub struct KeyDir {
     inner: KeyDirMap,
     latest: Option<PathBuf>,
+    path: PathBuf,
+    max_file_size: u64,
 }
 
 impl KeyDir {
@@ -59,12 +61,22 @@ impl KeyDir {
 
         self.inner.insert(entry.key.to_owned(), key_data);
     }
+
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
+    pub fn max_file_size(&self) -> u64 {
+        self.max_file_size
+    }
 }
 
-pub async fn bootstrap(db_path: &str) -> io::Result<Arc<RwLock<KeyDir>>> {
+pub async fn bootstrap(db_path: &str, max_file_size: u64) -> io::Result<Arc<RwLock<KeyDir>>> {
     let mut ret = KeyDir {
         inner: HashMap::new(),
         latest: db::get_active_file(db_path).await?,
+        path: PathBuf::from(db_path),
+        max_file_size,
     };
 
     let mut dir = db::open_db_dir(db_path).await?;
@@ -106,6 +118,7 @@ mod test {
     use crate::{db, entry::Entry, key_dir};
 
     const TEST_KEY_DIR_PATH: &str = "test_key_dir_db/";
+    const MAX_FILE_SIZE: u64 = 64;
 
     fn expected_test_db_path() -> PathBuf {
         let mut path = PathBuf::new();
@@ -154,7 +167,7 @@ mod test {
         setup().await?;
         let _cu = CleanUp(TEST_KEY_DIR_PATH);
 
-        let res = key_dir::bootstrap(TEST_KEY_DIR_PATH).await?;
+        let res = key_dir::bootstrap(TEST_KEY_DIR_PATH, MAX_FILE_SIZE).await?;
 
         let res = res.read().await;
         for (k, v) in res.iter() {
