@@ -1,7 +1,6 @@
 use std::io::{self, BufRead, BufReader as SyncBufReader, BufWriter as SyncBufWriter};
 
 use hash_db::command::Command;
-use hash_db::db;
 use hash_db::key_dir;
 
 const MAX_FILE_SIZE: u64 = 64;

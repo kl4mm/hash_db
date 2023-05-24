@@ -108,6 +108,7 @@ async fn compaction(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<()> {
 
     while let Some(file) = dir.next_entry().await? {
         let mut path = file.path();
+        eprintln!("Compacting {:?}", &path);
         // Don't clean up hint files, delete any later if needed
         if path.ends_with("_hint") {
             continue;
@@ -126,11 +127,13 @@ async fn compaction(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<()> {
         let mut keep = Vec::new();
         let mut deleted = 0;
 
+        eprintln!("Reading {:?}", file.path());
         let file = OpenOptions::new().read(true).open(file.path()).await?;
         let mut reader = BufReader::new(file);
 
         // Read each entry in the file
         while let Some(entry) = Entry::read(&mut reader).await {
+            eprintln!("Checking entry: {:?}", &entry);
             let key = &entry.key;
 
             // Keep if path of entry matches path of current file
@@ -146,6 +149,7 @@ async fn compaction(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<()> {
             }
         }
 
+        eprintln!("Keeping: {}", keep.len());
         // Nothing to keep, remove file
         if keep.len() == 0 {
             // Delete file
@@ -153,6 +157,7 @@ async fn compaction(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<()> {
             continue;
         }
 
+        eprintln!("Deleting: {}", deleted);
         // Rewrite file with entries to keep
         if deleted > 0 {
             let file_name = match path.file_name() {
@@ -221,9 +226,13 @@ async fn compaction(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<()> {
 mod test {
     use std::{io, path::PathBuf};
 
-    use tokio::fs::OpenOptions;
+    use tokio::fs::{self, OpenOptions};
 
-    use crate::{command::Command, db, key_dir};
+    use crate::{
+        command::Command,
+        db,
+        key_dir::{self, KeyData},
+    };
 
     struct CleanUp(&'static str);
     impl Drop for CleanUp {
@@ -273,12 +282,14 @@ mod test {
     // and are active in newer files
     // 3. File untouched
     #[tokio::test]
-    async fn test_compaction() -> io::Result<()> {
-        const DB_PATH: &str = "test_db_compaction/";
+    async fn test_compaction_delete_entire_file() -> io::Result<()> {
+        const DB_PATH: &str = "test_compaction_delete_entire_file/";
         const MAX_FILE_SIZE: u64 = 256;
 
-        // Setup
+        // Set a dummy file to be the latest
         let _ = db::open_db_dir(DB_PATH).await?;
+        let dummy_file = PathBuf::from(format!("{DB_PATH}0"));
+        fs::File::create(&dummy_file).await?;
         let _c = CleanUp(DB_PATH);
 
         let key_dir = key_dir::bootstrap(DB_PATH, MAX_FILE_SIZE)
@@ -298,7 +309,26 @@ mod test {
             Command::insert(&key_dir, &mut stdout, entry.0, entry.1).await?;
         }
 
+        key_dir.write().await.set_latest(dummy_file.clone());
+        key_dir.write().await.insert(
+            "key".into(),
+            KeyData {
+                path: dummy_file,
+                value_s: 5,
+                pos: 0,
+                time: 0,
+            },
+        );
         db::compaction(&key_dir).await.expect("compaction failed");
+
+        // There should only be one file in DB_PATH
+        let mut db = db::open_db_dir(DB_PATH).await?;
+        let mut count = 0;
+        while let Some(_) = db.next_entry().await? {
+            count += 1
+        }
+
+        assert!(count == 1);
 
         Ok(())
     }

@@ -2,6 +2,7 @@ use std::io;
 
 use tokio::io::{AsyncBufRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
+#[derive(Debug)]
 pub struct Entry {
     pub delete: bool,
     pub time: u64,
