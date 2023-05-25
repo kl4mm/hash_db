@@ -321,7 +321,7 @@ mod test {
         );
         db::compaction(&key_dir).await.expect("compaction failed");
 
-        // There should only be one file in DB_PATH
+        // There should only be the one dummy file in DB_PATH
         let mut db = db::open_db_dir(DB_PATH).await?;
         let mut count = 0;
         while let Some(_) = db.next_entry().await? {
@@ -329,6 +329,71 @@ mod test {
         }
 
         assert!(count == 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_compaction_delete_some() -> io::Result<()> {
+        const DB_PATH: &str = "test_compaction_delete_some/";
+        const MAX_FILE_SIZE: u64 = 512;
+
+        // Set a dummy file to be the latest
+        let _ = db::open_db_dir(DB_PATH).await?;
+        let dummy_file = PathBuf::from(format!("{DB_PATH}0"));
+        fs::File::create(&dummy_file).await?;
+        let _c = CleanUp(DB_PATH);
+
+        let key_dir = key_dir::bootstrap(DB_PATH, MAX_FILE_SIZE)
+            .await
+            .expect("key dir bootstrap failed");
+
+        let entries = [
+            ("key", "value"),
+            ("other_key", "other_value"),
+            ("key", "value"),
+            ("other_key", "other_value"),
+            ("key", "value"),
+            ("other_key", "other_value"),
+            ("key", "value"),
+            ("other_key", "other_value"),
+            ("key", "value"),
+        ];
+
+        let mut stdout = io::stdout().lock();
+        for entry in entries {
+            Command::insert(&key_dir, &mut stdout, entry.0, entry.1).await?;
+        }
+
+        key_dir.write().await.set_latest(dummy_file.clone());
+        key_dir.write().await.insert(
+            "key".into(),
+            KeyData {
+                path: dummy_file,
+                value_s: 5,
+                pos: 0,
+                time: 0,
+            },
+        );
+        db::compaction(&key_dir).await.expect("compaction failed");
+
+        // Running compaction once the original file remains and a new file with a _1 suffix is
+        // created. The new file will only contain "other_key".
+        // The second time compaction is run, the original file is deleted because there is nothing
+        // to keep - "key" lives in the dummy file and "other_key" lives in the new file.
+
+        let got = key_dir
+            .read()
+            .await
+            .get("other_key")
+            .unwrap()
+            .path
+            .clone()
+            .into_os_string()
+            .into_string()
+            .unwrap();
+
+        assert!(got.ends_with("_1"));
 
         Ok(())
     }
