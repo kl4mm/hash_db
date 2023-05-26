@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::fs::{self, File};
 use tokio::fs::{OpenOptions, ReadDir};
-use tokio::io::{BufReader, BufWriter};
+use tokio::io::BufReader;
 use tokio::sync::RwLock;
 
 use crate::entry::Entry;
@@ -56,7 +56,7 @@ pub async fn get_active_file(db_path: &str) -> io::Result<Option<PathBuf>> {
     }
 }
 
-/// Returns latest file, file size and path
+/// Returns latest file, position and path
 /// Will create a new file if latest file is greater than MAX_FILE_SIZE
 pub async fn open_latest(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<(File, u64, PathBuf)> {
     // Return the file if its less than MAX_FILE_SIZE
@@ -94,11 +94,11 @@ pub async fn open_latest(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<(File, u64
     Ok((file, 0, file_path))
 }
 
-async fn compaction_loop(key_dir: Arc<RwLock<KeyDir>>, interval: Duration) -> io::Result<()> {
+pub async fn compaction_loop(key_dir: Arc<RwLock<KeyDir>>, interval: Duration) -> io::Result<()> {
     loop {
         tokio::time::sleep(interval).await;
         if let Err(e) = compaction(&key_dir).await {
-            dbg!(e);
+            eprintln!("ERROR: Running compaction: {e}");
         }
     }
 }
@@ -150,9 +150,7 @@ async fn compaction(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<()> {
         }
 
         eprintln!("Keeping: {}", keep.len());
-        // Nothing to keep, remove file
         if keep.len() == 0 {
-            // Delete file
             fs::remove_file(path).await?;
             continue;
         }
