@@ -397,4 +397,48 @@ mod test {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_compaction_delete_none() -> io::Result<()> {
+        const DB_PATH: &str = "test_compaction_delete_none/";
+        const MAX_FILE_SIZE: u64 = 256;
+
+        // Set a dummy file to be the latest
+        let _ = db::open_db_dir(DB_PATH).await?;
+        let dummy_file = PathBuf::from(format!("{DB_PATH}0"));
+        fs::File::create(&dummy_file).await?;
+        let _c = CleanUp(DB_PATH);
+
+        let key_dir = key_dir::bootstrap(DB_PATH, MAX_FILE_SIZE)
+            .await
+            .expect("key dir bootstrap failed");
+
+        let entries = [
+            ("key", "value"),
+            ("other_key", "other_value"),
+            ("other_key2", "other_value"),
+            ("other_key3", "other_value"),
+            ("other_key4", "other_value"),
+            ("other_key5", "other_value"),
+            ("other_key6", "other_value"),
+        ];
+
+        let mut stdout = io::stdout().lock();
+        for entry in entries {
+            Command::insert(&key_dir, &mut stdout, entry.0, entry.1).await?;
+        }
+
+        key_dir.write().await.set_latest(dummy_file.clone());
+        db::compaction(&key_dir).await.expect("compaction failed");
+
+        let mut db = db::open_db_dir(DB_PATH).await?;
+        let mut size = 0;
+        while let Some(dir) = db.next_entry().await? {
+            size += dir.metadata().await.expect("couldn't get metadata").len()
+        }
+
+        assert!(size == 308);
+
+        Ok(())
+    }
 }
