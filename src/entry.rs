@@ -15,26 +15,6 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub fn new(
-        delete: bool,
-        time: u64,
-        key_s: u64,
-        value_s: u64,
-        key: String,
-        value: String,
-        pos: u64,
-    ) -> Self {
-        Self {
-            delete,
-            time,
-            key_s,
-            value_s,
-            key,
-            value,
-            pos,
-        }
-    }
-
     pub async fn read<T>(reader: &mut T) -> Option<Entry>
     where
         T: AsyncBufRead + AsyncSeekExt + Unpin,
