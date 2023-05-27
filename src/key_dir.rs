@@ -129,12 +129,7 @@ mod test {
     }
 
     async fn setup() -> io::Result<()> {
-        let entries: Vec<Entry> = vec![
-            Entry::new(false, 10, 5, 5, "hello".into(), "world".into(), 0),
-            Entry::new(false, 20, 4, 3, "test".into(), "key".into(), 35),
-            Entry::new(false, 30, 5, 5, "apple".into(), "fruit".into(), 67),
-            Entry::new(true, 30, 7, 3, "deleted".into(), "key".into(), 101),
-        ];
+        let entries = [("hello", "world"), ("test", "key"), ("apple", "fruit")];
 
         // Will create if path doesn't exist
         let _ = db::open_db_dir(TEST_KEY_DIR_PATH).await?;
@@ -146,9 +141,13 @@ mod test {
             .await?;
         let mut writer = BufWriter::new(file);
 
+        let mut ts = 0;
         for entry in entries {
-            entry.write(&mut writer).await?;
+            Entry::write_new(&mut writer, entry.0, entry.1, ts, false).await?;
+            ts += 1;
         }
+
+        Entry::write_new(&mut writer, "deleted", "key", ts, true).await?;
 
         Ok(())
     }
@@ -178,7 +177,7 @@ mod test {
                             path: expected_test_db_path(),
                             value_s: 5,
                             pos: 0,
-                            time: 10
+                            time: 0,
                         }
                     );
                 }
@@ -188,7 +187,7 @@ mod test {
                             path: expected_test_db_path(),
                             value_s: 3,
                             pos: 35,
-                            time: 20
+                            time: 1,
                         }
                     );
                 }
@@ -198,7 +197,7 @@ mod test {
                             path: expected_test_db_path(),
                             value_s: 5,
                             pos: 67,
-                            time: 30
+                            time: 2,
                         }
                     );
                 }

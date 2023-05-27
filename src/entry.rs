@@ -110,11 +110,17 @@ impl Entry {
         Ok(())
     }
 
-    pub async fn write_new<T>(writer: &mut T, k: &str, v: &str, time: u64) -> io::Result<()>
+    pub async fn write_new<T>(
+        writer: &mut T,
+        k: &str,
+        v: &str,
+        time: u64,
+        delete: bool,
+    ) -> io::Result<()>
     where
         T: AsyncWriteExt + Unpin,
     {
-        writer.write_u8(0).await?;
+        writer.write_u8(delete as u8).await?;
         writer.write_u64(time).await?;
         writer.write_u64(k.len() as u64).await?;
         writer.write_u64(v.len() as u64).await?;

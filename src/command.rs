@@ -102,7 +102,7 @@ impl<'a> Command<'a> {
 
         // Write the entry
         let mut writer = BufWriter::new(file);
-        Entry::write_new(&mut writer, k, v, time).await?;
+        Entry::write_new(&mut writer, k, v, time, false).await?;
 
         // Insert the key and offset to index
         key_dir.write().await.insert(
