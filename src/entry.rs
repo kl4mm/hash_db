@@ -110,20 +110,18 @@ impl Entry {
         Ok(())
     }
 
-    pub fn new_bytes(k: &str, v: &str, time: u64) -> Vec<u8> {
-        let mut entry: Vec<u8> = Vec::new();
-        // Delete
-        entry.extend_from_slice(&[0]);
+    pub async fn write_new<T>(writer: &mut T, k: &str, v: &str, time: u64) -> io::Result<()>
+    where
+        T: AsyncWriteExt + Unpin,
+    {
+        writer.write_u8(0).await?;
+        writer.write_u64(time).await?;
+        writer.write_u64(k.len() as u64).await?;
+        writer.write_u64(v.len() as u64).await?;
+        writer.write(k.as_bytes()).await?;
+        writer.write(v.as_bytes()).await?;
+        writer.flush().await?;
 
-        // Timestamp, key len and value len occupy 8 bytes each
-        entry.extend_from_slice(&time.to_be_bytes());
-        entry.extend_from_slice(&(k.len()).to_be_bytes());
-        entry.extend_from_slice(&(v.len()).to_be_bytes());
-
-        // Key and Value:
-        entry.extend_from_slice(k.as_bytes());
-        entry.extend_from_slice(v.as_bytes());
-
-        entry
+        Ok(())
     }
 }

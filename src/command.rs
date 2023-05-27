@@ -100,13 +100,9 @@ impl<'a> Command<'a> {
             .expect("Time before UNIX Epoch")
             .as_secs();
 
-        // Get entry bytes
-        let entry = Entry::new_bytes(k, v, time);
-
         // Write the entry
         let mut writer = BufWriter::new(file);
-        writer.write_all(&entry).await?;
-        writer.flush().await?;
+        Entry::write_new(&mut writer, k, v, time).await?;
 
         // Insert the key and offset to index
         key_dir.write().await.insert(
