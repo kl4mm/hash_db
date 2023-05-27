@@ -302,9 +302,9 @@ mod test {
             ("key", "value"),
         ];
 
-        let mut stdout = io::stdout().lock();
+        let mut null = Vec::new();
         for entry in entries {
-            Command::insert(&key_dir, &mut stdout, entry.0, entry.1).await?;
+            Command::insert(&key_dir, &mut null, entry.0, entry.1).await?;
         }
 
         key_dir.write().await.set_latest(dummy_file.clone());
@@ -358,9 +358,9 @@ mod test {
             ("key", "value"),
         ];
 
-        let mut stdout = io::stdout().lock();
+        let mut null = Vec::new();
         for entry in entries {
-            Command::insert(&key_dir, &mut stdout, entry.0, entry.1).await?;
+            Command::insert(&key_dir, &mut null, entry.0, entry.1).await?;
         }
 
         key_dir.write().await.set_latest(dummy_file.clone());
@@ -421,9 +421,9 @@ mod test {
             ("other_key6", "other_value"),
         ];
 
-        let mut stdout = io::stdout().lock();
+        let mut null = Vec::new();
         for entry in entries {
-            Command::insert(&key_dir, &mut stdout, entry.0, entry.1).await?;
+            Command::insert(&key_dir, &mut null, entry.0, entry.1).await?;
         }
 
         key_dir.write().await.set_latest(dummy_file.clone());

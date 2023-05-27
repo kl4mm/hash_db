@@ -1,12 +1,12 @@
 use std::{
-    io::{self, SeekFrom, Write},
+    io::{self, SeekFrom},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use tokio::{
     fs::OpenOptions,
-    io::{AsyncSeekExt, AsyncWriteExt, BufReader, BufWriter},
+    io::{AsyncSeekExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter},
     sync::RwLock,
 };
 
@@ -59,18 +59,23 @@ impl<'a> Into<Command<'a>> for &'a str {
 }
 
 impl<'a> Command<'a> {
-    pub async fn handle(
+    pub async fn handle<T>(
         command: Command<'a>,
         key_dir: &Arc<RwLock<KeyDir>>,
-        write_to: &mut impl Write,
-    ) -> io::Result<()> {
+        write_to: &mut T,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin,
+    {
         match command {
             Command::Insert(k, v) => Self::insert(key_dir, write_to, k, v).await?,
             Command::Delete(k) => Self::delete(key_dir, write_to, k).await?,
             Command::Get(k) => Self::get(key_dir, write_to, k).await?,
             Command::None => {
-                write_to.write_all(b"Invalid Command. Usage:\nINSERT key value\nGET key\n")?;
-                write_to.flush()?;
+                write_to
+                    .write_all(b"Invalid Command. Usage:\nINSERT key value\nGET key\n")
+                    .await?;
+                write_to.flush().await?;
             }
         }
 
@@ -78,12 +83,15 @@ impl<'a> Command<'a> {
     }
 
     #[inline]
-    pub async fn insert(
+    pub async fn insert<T>(
         key_dir: &Arc<RwLock<KeyDir>>,
-        write_to: &mut impl Write,
+        write_to: &mut T,
         k: &str,
         v: &str,
-    ) -> io::Result<()> {
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin,
+    {
         let (file, position, file_path) = db::open_latest(key_dir).await?;
 
         // Get current time
@@ -111,18 +119,17 @@ impl<'a> Command<'a> {
             },
         );
 
-        write_to.write_all(b"OK\n")?;
-        write_to.flush()?;
+        write_to.write_all(b"OK\n").await?;
+        write_to.flush().await?;
 
         Ok(())
     }
 
     #[inline]
-    pub async fn get(
-        key_dir: &Arc<RwLock<KeyDir>>,
-        write_to: &mut impl Write,
-        k: &str,
-    ) -> io::Result<()> {
+    pub async fn get<T>(key_dir: &Arc<RwLock<KeyDir>>, write_to: &mut T, k: &str) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin,
+    {
         if let Some(key_data) = key_dir.read().await.get(k) {
             let file = OpenOptions::new().read(true).open(&key_data.path).await?;
 
@@ -133,28 +140,33 @@ impl<'a> Command<'a> {
             let entry = match Entry::read(&mut reader).await {
                 Some(e) => e,
                 None => {
-                    write_to.write_all(b"There was a problem reading the entry\n")?;
-                    write_to.flush()?;
+                    write_to
+                        .write_all(b"There was a problem reading the entry\n")
+                        .await?;
+                    write_to.flush().await?;
                     return Ok(());
                 }
             };
 
-            write_to.write(&entry.key.as_bytes())?;
-            write_to.write(b" ")?;
-            write_to.write(&entry.value.as_bytes())?;
-            write_to.write(b"\n")?;
-            write_to.flush()?;
+            write_to.write(&entry.key.as_bytes()).await?;
+            write_to.write(b" ").await?;
+            write_to.write(&entry.value.as_bytes()).await?;
+            write_to.write(b"\n").await?;
+            write_to.flush().await?;
         }
 
         Ok(())
     }
 
     #[inline]
-    pub async fn delete(
+    pub async fn delete<T>(
         key_dir: &Arc<RwLock<KeyDir>>,
-        write_to: &mut impl Write,
+        write_to: &mut T,
         k: &str,
-    ) -> io::Result<()> {
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin,
+    {
         if let Some(key_data) = key_dir.write().await.remove(k.into()) {
             let mut file = OpenOptions::new().write(true).open(&key_data.path).await?;
 
@@ -167,8 +179,8 @@ impl<'a> Command<'a> {
             writer.flush().await?;
 
             // Write to stdout
-            write_to.write(b"OK\n")?;
-            write_to.flush()?;
+            write_to.write(b"OK\n").await?;
+            write_to.flush().await?;
         }
 
         Ok(())
