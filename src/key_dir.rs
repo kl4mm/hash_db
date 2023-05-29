@@ -81,14 +81,12 @@ pub async fn bootstrap(db_path: &str, max_file_size: u64) -> io::Result<Arc<RwLo
 
     let mut dir = db::open_db_dir(db_path).await?;
 
-    // Parse each file inside db/
+    // FIXME: This function can read the files inside db_path in any order, which means newer files
+    // can be read before older files. Older files could contain deleted keys which may or may not
+    // appear in future bootstraps. Keys can also be reinserted and then disappear in future
+    // bootstraps.
     while let Some(file) = dir.next_entry().await? {
         eprintln!("Parsing: {:?}", file.path());
-        if file.path().ends_with("_hint") {
-            // TODO: parse hint files
-            eprintln!("Unimplemented: parse hint files");
-            continue;
-        }
 
         let open = OpenOptions::new().read(true).open(file.path()).await?;
         let mut reader = BufReader::new(open);

@@ -73,7 +73,9 @@ impl<'a> Command<'a> {
             Command::Get(k) => Self::get(key_dir, write_to, k).await?,
             Command::None => {
                 write_to
-                    .write_all(b"Invalid Command. Usage:\nINSERT key value\nGET key\n")
+                    .write_all(
+                        b"Invalid command. Usage:\ninsert <key> <value>\nget <key>\ndelete <key>\n",
+                    )
                     .await?;
                 write_to.flush().await?;
             }

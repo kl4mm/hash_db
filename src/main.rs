@@ -1,4 +1,5 @@
 use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,15 +31,21 @@ async fn main() -> io::Result<()> {
 
     loop {
         match listener.accept().await {
-            Ok((stream, _addr)) => {
-                tokio::spawn(accept_loop(stream, key_dir.clone()));
+            Ok((stream, addr)) => {
+                tokio::spawn(accept_loop(stream, addr, key_dir.clone()));
             }
             Err(e) => eprintln!("ERROR: {e}"),
         }
     }
 }
 
-async fn accept_loop(mut stream: TcpStream, key_dir: Arc<RwLock<KeyDir>>) -> io::Result<()> {
+async fn accept_loop(
+    mut stream: TcpStream,
+    addr: SocketAddr,
+    key_dir: Arc<RwLock<KeyDir>>,
+) -> io::Result<()> {
+    eprintln!("Client connected: {}", addr);
+
     let (reader, writer) = stream.split();
     let mut reader = BufReader::new(reader);
     let mut writer = BufWriter::new(writer);
@@ -48,7 +55,7 @@ async fn accept_loop(mut stream: TcpStream, key_dir: Arc<RwLock<KeyDir>>) -> io:
         reader.read_line(&mut buf).await?;
 
         if let Err(e) = Command::handle(buf.as_str().into(), &key_dir, &mut writer).await {
-            eprintln!("ERROR: {e}");
+            eprintln!("Client disconnected: {}", addr);
 
             break Ok(());
         }

@@ -11,11 +11,11 @@ use tokio::sync::RwLock;
 use crate::entry::Entry;
 use crate::key_dir::{KeyData, KeyDir};
 
+/// Attemps to open db_path. Will create if not found.
 pub async fn open_db_dir<T>(db_path: T) -> io::Result<ReadDir>
 where
     T: AsRef<Path> + Copy,
 {
-    // Try to open db/, create it if it doesn't exist
     let dir = match fs::read_dir(db_path).await {
         Ok(d) => d,
         Err(e) if e.kind() == ErrorKind::NotFound => {
@@ -61,19 +61,18 @@ pub async fn get_active_file(db_path: &str) -> io::Result<Option<PathBuf>> {
 pub async fn open_latest(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<(File, u64, PathBuf)> {
     // Return the file if its less than MAX_FILE_SIZE
     if let Some(path) = key_dir.read().await.latest() {
-        let file_path = PathBuf::from(path);
-        let file = OpenOptions::new().append(true).open(&file_path).await?;
+        let file = OpenOptions::new().append(true).open(&path).await?;
         let position = file.metadata().await?.len();
 
         if position < key_dir.read().await.max_file_size() {
-            return Ok((file, position, file_path));
+            return Ok((file, position, path.clone()));
         }
     }
 
-    // At this point, either there are no files in db/ or the latest
+    // At this point, either there are no files in db path or the latest
     // file exceeds MAX_FILE_SIZE
 
-    // File name is time in ms
+    // File name is time is millisecond timestamp
     let file_name = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Time before UNIX Epoch")
@@ -109,10 +108,6 @@ async fn compaction(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<()> {
     while let Some(file) = dir.next_entry().await? {
         let mut path = file.path();
         eprintln!("Compacting {:?}", &path);
-        // Don't clean up hint files, delete any later if needed
-        if path.ends_with("_hint") {
-            continue;
-        }
 
         // Skip if latest file
         match key_dir.read().await.latest() {
@@ -133,7 +128,6 @@ async fn compaction(key_dir: &Arc<RwLock<KeyDir>>) -> io::Result<()> {
 
         // Read each entry in the file
         while let Some(entry) = Entry::read(&mut reader).await {
-            eprintln!("Checking entry: {:?}", &entry);
             let key = &entry.key;
 
             // Keep if path of entry matches path of current file
