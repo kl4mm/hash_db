@@ -23,6 +23,7 @@ pub enum PageError {
     NotEnoughSpace,
 }
 
+#[derive(Debug)]
 pub struct Page<const SIZE: usize> {
     pub id: PageID,
     pub data: BytesMut,
@@ -56,10 +57,6 @@ impl<const SIZE: usize> Page<SIZE> {
         }
     }
 
-    pub fn pins(&self) -> &AtomicU32 {
-        &self.pins
-    }
-
     pub fn write_entry(&mut self, entry: &Entry) -> Result<usize, PageError> {
         let len = entry.len();
         let offset = self.len.fetch_add(len, Ordering::Relaxed);
@@ -91,5 +88,9 @@ impl<const SIZE: usize> Page<SIZE> {
             key: key.into(),
             value: value.into(),
         }
+    }
+
+    pub fn pin(&self) {
+        self.pins.fetch_add(1, Ordering::Relaxed);
     }
 }

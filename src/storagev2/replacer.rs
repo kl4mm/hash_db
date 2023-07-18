@@ -37,6 +37,7 @@ impl LrukReplacer {
         let mut single_access: Vec<&Lruk> = Vec::new();
         for (id, node) in &self.nodes {
             if !node.is_evictable {
+                eprintln!("Buffer index {} is not evictable", node.buf_i);
                 continue;
             }
 
