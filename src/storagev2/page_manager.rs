@@ -15,6 +15,7 @@ use crate::storagev2::{
     replacer::LrukReplacer,
 };
 
+#[derive(Debug)]
 pub enum PageIndex {
     Write,
     Read(usize),
@@ -236,23 +237,33 @@ mod test {
 
         let mut m = PageManager::<DEFAULT_PAGE_SIZE, 3>::new(disk);
 
-        let a = m.new_page().await.expect("should have space for page 1"); // ts = 0
-        let b = m.new_page().await.expect("should have space for page 2"); // ts = 1
-        let c = m.new_page().await.expect("should have space for page 3"); // ts = 2
+        let _ = m.new_page().await.expect("should have space for page 1"); // ts = 0
+        let _ = m.new_page().await.expect("should have space for page 2"); // ts = 1
+        let _ = m.new_page().await.expect("should have space for page 3"); // ts = 2
 
-        let _ = m.fetch_page(1); // ts = 3
-        let _ = m.fetch_page(2); // ts = 4
-        let _ = m.fetch_page(1); // ts = 5
+        let _ = m.fetch_page(1).await; // ts = 3
+        let _ = m.fetch_page(2).await; // ts = 4
+        let _ = m.fetch_page(1).await; // ts = 5
 
-        let _ = m.fetch_page(1); // ts = 6
-        let _ = m.fetch_page(2); // ts = 7
-        let _ = m.fetch_page(1); // ts = 8
-        let _ = m.fetch_page(2); // ts = 9
+        let _ = m.fetch_page(1).await; // ts = 6
+        let _ = m.fetch_page(2).await; // ts = 7
+        let _ = m.fetch_page(1).await; // ts = 8
+        let _ = m.fetch_page(2).await; // ts = 9
 
-        let _ = m.fetch_page(3); // ts = 10 - Least accessed, should get evicted
+        let _ = m.fetch_page(3).await; // ts = 10 - Least accessed, should get evicted
 
         m.unpin_page(1).await;
+        m.unpin_page(1).await;
+        m.unpin_page(1).await;
+        m.unpin_page(1).await;
+        m.unpin_page(1).await;
+
         m.unpin_page(2).await;
+        m.unpin_page(2).await;
+        m.unpin_page(2).await;
+        m.unpin_page(2).await;
+
+        m.unpin_page(3).await;
         m.unpin_page(3).await;
 
         let new_page = m.new_page().await.expect("a page should have been evicted");
