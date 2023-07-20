@@ -241,16 +241,16 @@ mod test {
         let _ = m.new_page().await.expect("should have space for page 2"); // ts = 1
         let _ = m.new_page().await.expect("should have space for page 3"); // ts = 2
 
-        let _ = m.fetch_page(1).await; // ts = 3
-        let _ = m.fetch_page(2).await; // ts = 4
-        let _ = m.fetch_page(1).await; // ts = 5
+        m.fetch_page(1).await; // ts = 3
+        m.fetch_page(2).await; // ts = 4
+        m.fetch_page(1).await; // ts = 5
 
-        let _ = m.fetch_page(1).await; // ts = 6
-        let _ = m.fetch_page(2).await; // ts = 7
-        let _ = m.fetch_page(1).await; // ts = 8
-        let _ = m.fetch_page(2).await; // ts = 9
+        m.fetch_page(1).await; // ts = 6
+        m.fetch_page(2).await; // ts = 7
+        m.fetch_page(1).await; // ts = 8
+        m.fetch_page(2).await; // ts = 9
 
-        let _ = m.fetch_page(3).await; // ts = 10 - Least accessed, should get evicted
+        m.fetch_page(3).await; // ts = 10 - Least accessed, should get evicted
 
         m.unpin_page(1).await;
         m.unpin_page(1).await;
