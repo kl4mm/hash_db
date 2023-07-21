@@ -61,16 +61,16 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
     }
 
     pub async fn replace_page(&mut self) -> io::Result<()> {
-        let mut page_w = self.current.write().await;
-        self.disk.write_page(&page_w)?;
+        let mut current = self.current.write().await;
+        self.disk.write_page(&current)?;
 
-        let old_id = page_w.id;
+        let old_id = current.id;
         if let None = self.page_table.remove(&old_id) {
             eprintln!("No write page while replacing write page");
         }
 
         let id = self.inc_id();
-        *page_w = Page::new(id);
+        *current = Page::new(id);
         self.page_table.insert(id, PageIndex::Write);
 
         Ok(())
@@ -81,7 +81,6 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
             i
         } else {
             let Some(i) = self.replacer.evict() else { return None };
-            // self.disk.write_page(&page);
 
             i
         };
@@ -94,6 +93,12 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
         self.page_table.insert(page_id, PageIndex::Read(i));
 
         let page_r = unsafe {
+            let mut _page_w;
+            if let Some(page) = &(*self.read)[i] {
+                self.page_table.remove(&page_id);
+                _page_w = page.write().await;
+            }
+
             (*self.read)[i].replace(RwLock::new(page));
             (*self.read)[i].as_ref().unwrap().read().await
         };
@@ -131,17 +136,16 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
         } else {
             let Some(i) = self.replacer.evict() else { return None };
             self.replacer.record_access(i);
-            // self.disk.write_page(&page);
 
             i
         };
 
         assert!(i < READ_SIZE);
         unsafe {
-            let mut _lock_w;
+            let mut _page_w;
             if let Some(page) = &(*self.read)[i] {
                 self.page_table.remove(&page_id);
-                _lock_w = page.write();
+                _page_w = page.write().await;
             }
 
             let page = self
@@ -175,6 +179,11 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
 
     pub async fn get_current(&self) -> RwLockWriteGuard<Page<PAGE_SIZE>> {
         self.current.write().await
+    }
+
+    pub async fn flush_current(&mut self) {
+        let current = self.current.write().await;
+        self.disk.write_page(&current);
     }
 }
 
@@ -210,8 +219,10 @@ mod test {
 
         let page_r = m.fetch_page(0).await.expect("should fetch current page");
 
-        let got_a = page_r.read_entry(0);
-        let got_b = page_r.read_entry(entry_a.len());
+        let got_a = page_r.read_entry(0).expect("got_a should not be empty");
+        let got_b = page_r
+            .read_entry(entry_a.len())
+            .expect("got_b should not be empty");
 
         assert!(
             entry_a == got_a,

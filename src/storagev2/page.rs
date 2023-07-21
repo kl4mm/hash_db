@@ -70,7 +70,7 @@ impl<const SIZE: usize> Page<SIZE> {
     }
 
     // TODO: handle invalid bounds
-    pub fn read_entry(&self, offset: usize) -> Entry {
+    pub fn read_entry(&self, offset: usize) -> Option<Entry> {
         let mut src = BytesMut::from(&self.data[offset..]);
 
         let t = src.get_u8();
@@ -82,11 +82,16 @@ impl<const SIZE: usize> Page<SIZE> {
         let key = get_bytes!(rm, 0, key_len);
         let value = get_bytes!(rm, key_len as usize, value_len);
 
-        Entry {
+        let entry = Entry {
             t: t.into(),
             time,
             key: key.into(),
             value: value.into(),
+        };
+
+        match entry.is_empty() {
+            true => None,
+            false => Some(entry),
         }
     }
 

@@ -2,8 +2,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::{BufMut, BytesMut};
 
-use crate::storagev2::page::PageID;
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum EntryType {
     Put,    // 0
@@ -69,9 +67,19 @@ impl Entry {
 
         ret
     }
-}
 
-pub struct EntryID {
-    page_id: PageID,
-    offset: u64,
+    pub fn is_empty(&self) -> bool {
+        if self
+            == &(Entry {
+                t: EntryType::Put,
+                time: 0,
+                key: BytesMut::new(),
+                value: BytesMut::new(),
+            })
+        {
+            true
+        } else {
+            false
+        }
+    }
 }

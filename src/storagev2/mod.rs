@@ -1,4 +1,5 @@
 pub mod disk;
+pub mod key_dir;
 pub mod log;
 pub mod page;
 pub mod page_manager;
