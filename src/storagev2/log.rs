@@ -67,19 +67,4 @@ impl Entry {
 
         ret
     }
-
-    pub fn is_empty(&self) -> bool {
-        if self
-            == &(Entry {
-                t: EntryType::Put,
-                time: 0,
-                key: BytesMut::new(),
-                value: BytesMut::new(),
-            })
-        {
-            true
-        } else {
-            false
-        }
-    }
 }

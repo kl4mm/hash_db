@@ -78,21 +78,20 @@ impl<const SIZE: usize> Page<SIZE> {
         let key_len = src.get_u64();
         let value_len = src.get_u64();
 
+        if time == 0 && key_len == 0 && value_len == 0 {
+            return None;
+        }
+
         let rm = &src[0..];
         let key = get_bytes!(rm, 0, key_len);
         let value = get_bytes!(rm, key_len as usize, value_len);
 
-        let entry = Entry {
+        Some(Entry {
             t: t.into(),
             time,
             key: key.into(),
             value: value.into(),
-        };
-
-        match entry.is_empty() {
-            true => None,
-            false => Some(entry),
-        }
+        })
     }
 
     pub fn pin(&self) {
