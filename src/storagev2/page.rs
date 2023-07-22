@@ -73,18 +73,28 @@ impl<const SIZE: usize> Page<SIZE> {
     pub fn read_entry(&self, offset: usize) -> Option<Entry> {
         let mut src = BytesMut::from(&self.data[offset..]);
 
+        let rm = offset + Entry::METADATA_LEN;
+        if rm >= SIZE {
+            return None;
+        }
+
         let t = src.get_u8();
         let time = src.get_u64();
         let key_len = src.get_u64();
         let value_len = src.get_u64();
 
+        if rm + (key_len + value_len) as usize > SIZE {
+            eprintln!("log entry was written that exceeded page size");
+            return None;
+        }
+
         if time == 0 && key_len == 0 && value_len == 0 {
             return None;
         }
 
-        let rm = &src[0..];
-        let key = get_bytes!(rm, 0, key_len);
-        let value = get_bytes!(rm, key_len as usize, value_len);
+        let rest = &src[0..];
+        let key = get_bytes!(rest, 0, key_len);
+        let value = get_bytes!(rest, key_len as usize, value_len);
 
         Some(Entry {
             t: t.into(),

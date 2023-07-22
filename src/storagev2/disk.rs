@@ -60,4 +60,12 @@ impl Disk {
             }
         }
     }
+
+    pub async fn len(&self) -> usize {
+        self.file
+            .metadata()
+            .await
+            .expect("error getting metadata")
+            .len() as usize
+    }
 }

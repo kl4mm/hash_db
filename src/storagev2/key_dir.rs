@@ -33,31 +33,35 @@ impl KeyDir {
     }
 }
 
-pub fn bootstrap<const PAGE_SIZE: usize>(disk: &Disk) -> KeyDir {
-    let page_id = 0;
-    let page = disk
-        .read_page::<PAGE_SIZE>(page_id)
-        .expect("should read first page");
+pub async fn bootstrap<const PAGE_SIZE: usize>(disk: &Disk) -> KeyDir {
+    let len = disk.len().await;
+    let pages = len / PAGE_SIZE;
 
     let mut inner = HashMap::new();
-    let mut offset = 0;
-    while let Some(entry) = page.read_entry(offset) {
-        match entry.t {
-            EntryType::Put => {
-                inner.insert(
-                    entry.key.clone(),
-                    KeyData {
-                        page_id,
-                        offset: offset as u64,
-                    },
-                );
-            }
-            EntryType::Delete => {
-                inner.remove(&entry.key);
-            }
-        };
+    for page_id in 0..pages as u32 {
+        let page = disk
+            .read_page::<PAGE_SIZE>(page_id)
+            .expect("should read first page");
 
-        offset = offset + entry.len();
+        let mut offset = 0;
+        while let Some(entry) = page.read_entry(offset) {
+            match entry.t {
+                EntryType::Put => {
+                    inner.insert(
+                        entry.key.clone(),
+                        KeyData {
+                            page_id,
+                            offset: offset as u64,
+                        },
+                    );
+                }
+                EntryType::Delete => {
+                    inner.remove(&entry.key);
+                }
+            };
+
+            offset = offset + entry.len();
+        }
     }
 
     KeyDir { inner }
@@ -81,10 +85,6 @@ mod test {
         let _cu = CleanUp::file(DB_FILE);
         let disk = Disk::new(DB_FILE).await?;
 
-        const PAGE_SIZE: usize = 252;
-        let mut current_id = 0;
-        let mut current = Page::<PAGE_SIZE>::new(current_id);
-
         let entries = [
             Entry::new(b"key1", b"value1", EntryType::Put),
             Entry::new(b"key2", b"value2", EntryType::Put),
@@ -92,11 +92,14 @@ mod test {
             Entry::new(b"key4", b"value4", EntryType::Put),
             Entry::new(b"key1", b"value1", EntryType::Delete),
             Entry::new(b"key5", b"value5", EntryType::Put),
-            // TODO: panics because of remaining space in buffer
-            // Entry::new(b"key5", b"value5", EntryType::Delete),
-            // Entry::new(b"key5", b"value5", EntryType::Put),
+            Entry::new(b"key5", b"value5", EntryType::Delete),
+            Entry::new(b"key4", b"latest", EntryType::Put),
+            Entry::new(b"key5", b"latest", EntryType::Put),
         ];
 
+        const PAGE_SIZE: usize = 256;
+        let mut current_id = 0;
+        let mut current = Page::<PAGE_SIZE>::new(current_id);
         for e in entries {
             if let Err(_) = current.write_entry(&e) {
                 disk.write_page(&current).expect("failed to write page");
@@ -109,7 +112,7 @@ mod test {
         }
         disk.write_page(&current).expect("failed to write page");
 
-        let key_dir = bootstrap::<PAGE_SIZE>(&disk);
+        let key_dir = bootstrap::<PAGE_SIZE>(&disk).await;
 
         let expected = KeyDir {
             inner: HashMap::from([
@@ -130,15 +133,15 @@ mod test {
                 (
                     "key4".into(),
                     KeyData {
-                        page_id: 0,
-                        offset: 105,
+                        page_id: 1,
+                        offset: 0,
                     },
                 ),
                 (
                     "key5".into(),
                     KeyData {
-                        page_id: 0,
-                        offset: 175,
+                        page_id: 1,
+                        offset: 35,
                     },
                 ),
             ]),
