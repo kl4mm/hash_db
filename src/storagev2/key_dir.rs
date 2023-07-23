@@ -41,7 +41,7 @@ pub async fn bootstrap<const PAGE_SIZE: usize>(disk: &Disk) -> KeyDir {
     for page_id in 0..pages as u32 {
         let page = disk
             .read_page::<PAGE_SIZE>(page_id)
-            .expect("should read first page");
+            .expect("should read page");
 
         let mut offset = 0;
         while let Some(entry) = page.read_entry(offset) {

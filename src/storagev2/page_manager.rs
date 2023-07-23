@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::storagev2::{
     disk::Disk,
@@ -24,26 +24,44 @@ pub enum PageIndex {
 pub const DEFAULT_PAGE_SIZE: usize = 4 * 1024;
 pub const DEFAULT_READ_SIZE: usize = 8;
 
-pub struct PageManager<const PAGE_SIZE: usize, const READ_SIZE: usize> {
-    disk: Disk,
-    page_table: HashMap<PageID, PageIndex>, // Map page ids to index
+#[derive(Clone)]
+pub struct PageManager<
+    const PAGE_SIZE: usize = DEFAULT_PAGE_SIZE,
+    const READ_SIZE: usize = DEFAULT_READ_SIZE,
+> {
+    disk: Arc<RwLock<Disk>>,
+    page_table: Arc<RwLock<HashMap<PageID, PageIndex>>>, // Map page ids to index
     current: Arc<RwLock<Page<PAGE_SIZE>>>,
     read: *mut [Option<RwLock<Page<PAGE_SIZE>>>; READ_SIZE], // Read only pages
-    free: Vec<usize>,
-    next_id: AtomicUsize,
-    replacer: LrukReplacer,
+    free: Arc<Mutex<Vec<usize>>>,
+    next_id: Arc<AtomicUsize>,
+    replacer: Arc<Mutex<LrukReplacer>>,
+}
+
+unsafe impl<const PAGE_SIZE: usize, const READ_SIZE: usize> Send
+    for PageManager<PAGE_SIZE, READ_SIZE>
+{
+}
+
+unsafe impl<const PAGE_SIZE: usize, const READ_SIZE: usize> Sync
+    for PageManager<PAGE_SIZE, READ_SIZE>
+{
 }
 
 impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ_SIZE> {
     pub fn new(disk: Disk) -> Self {
         // TODO: bootstrap process could give us the write page and next_id
+        let disk = Arc::new(RwLock::new(disk));
         let current_page_id = 0;
         let current = Arc::new(RwLock::new(Page::<PAGE_SIZE>::new(current_page_id)));
-        let page_table = HashMap::from([(current_page_id, PageIndex::Write)]);
+        let page_table = Arc::new(RwLock::new(HashMap::from([(
+            current_page_id,
+            PageIndex::Write,
+        )])));
         let read = Box::into_raw(Box::new(std::array::from_fn(|_| None)));
-        let next_id = AtomicUsize::new(1);
-        let free = (0..READ_SIZE).rev().collect();
-        let replacer = LrukReplacer::new(2);
+        let next_id = Arc::new(AtomicUsize::new(1));
+        let free = Arc::new(Mutex::new((0..READ_SIZE).rev().collect()));
+        let replacer = Arc::new(Mutex::new(LrukReplacer::new(2)));
 
         Self {
             disk,
@@ -60,42 +78,53 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
         self.next_id.fetch_add(1, Ordering::Relaxed) as u32
     }
 
-    pub async fn replace_page(&mut self) -> io::Result<()> {
-        let mut current = self.current.write().await;
-        self.disk.write_page(&current)?;
+    pub async fn replace_page(
+        &mut self,
+        current: &mut RwLockWriteGuard<'_, Page<PAGE_SIZE>>,
+    ) -> io::Result<()> {
+        self.disk.write().await.write_page(&current)?;
+
+        let mut page_table = self.page_table.write().await;
 
         let old_id = current.id;
-        if let None = self.page_table.remove(&old_id) {
+        if let None = page_table.remove(&old_id) {
             eprintln!("No write page while replacing write page");
         }
 
         let id = self.inc_id();
-        *current = Page::new(id);
-        self.page_table.insert(id, PageIndex::Write);
+        **current = Page::new(id);
+        page_table.insert(id, PageIndex::Write);
 
         Ok(())
     }
 
     pub async fn new_page<'a>(&mut self) -> Option<RwLockReadGuard<'a, Page<PAGE_SIZE>>> {
-        let i = if let Some(i) = self.free.pop() {
+        let i = if let Some(i) = self.free.lock().await.pop() {
             i
         } else {
-            let Some(i) = self.replacer.evict() else { return None };
+            let Some(i) = self.replacer.lock().await.evict() else { return None };
 
             i
         };
-        self.replacer.record_access(i);
+        self.replacer.lock().await.record_access(i);
 
         let page_id = self.inc_id();
         let page = Page::<PAGE_SIZE>::new(page_id);
         page.pin();
-        self.disk.write_page(&page).expect("Couldn't write page");
-        self.page_table.insert(page_id, PageIndex::Read(i));
+        self.disk
+            .write()
+            .await
+            .write_page(&page)
+            .expect("Couldn't write page");
+        self.page_table
+            .write()
+            .await
+            .insert(page_id, PageIndex::Read(i));
 
         let page_r = unsafe {
             let mut _page_w;
             if let Some(page) = &(*self.read)[i] {
-                self.page_table.remove(&page_id);
+                self.page_table.write().await.remove(&page_id);
                 _page_w = page.write().await;
             }
 
@@ -110,7 +139,7 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
         &mut self,
         page_id: PageID,
     ) -> Option<RwLockReadGuard<'_, Page<PAGE_SIZE>>> {
-        if let Some(i) = self.page_table.get(&page_id) {
+        if let Some(i) = self.page_table.read().await.get(&page_id) {
             return match i {
                 PageIndex::Write => {
                     let page = self.current.as_ref().read().await;
@@ -118,7 +147,7 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
                 }
                 PageIndex::Read(i) => unsafe {
                     assert!(*i < READ_SIZE);
-                    self.replacer.record_access(*i);
+                    self.replacer.lock().await.record_access(*i);
 
                     let page = (*self.read)[*i]
                         .as_ref()
@@ -131,11 +160,11 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
             };
         };
 
-        let i = if let Some(i) = self.free.pop() {
+        let i = if let Some(i) = self.free.lock().await.pop() {
             i
         } else {
-            let Some(i) = self.replacer.evict() else { return None };
-            self.replacer.record_access(i);
+            let Some(i) = self.replacer.lock().await.evict() else { return None };
+            self.replacer.lock().await.record_access(i);
 
             i
         };
@@ -144,12 +173,14 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
         unsafe {
             let mut _page_w;
             if let Some(page) = &(*self.read)[i] {
-                self.page_table.remove(&page_id);
+                self.page_table.write().await.remove(&page_id);
                 _page_w = page.write().await;
             }
 
             let page = self
                 .disk
+                .read()
+                .await
                 .read_page::<PAGE_SIZE>(page_id)
                 .expect("Couldn't read page");
 
@@ -163,17 +194,19 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
     }
 
     pub async fn unpin_page(&mut self, page_id: PageID) {
-        let Some(i) = self.page_table.get(&page_id) else { return };
+        let page_table = self.page_table.read().await;
+        let Some(i) = page_table.get(&page_id) else { return };
 
         let i = match i {
-            PageIndex::Read(i) => i,
+            PageIndex::Read(i) => *i,
             _ => todo!(),
         };
+        drop(page_table);
 
-        let page = unsafe { (*self.read)[*i].as_ref().unwrap().read().await };
+        let page = unsafe { (*self.read)[i].as_ref().unwrap().read().await };
 
         if page.pins.fetch_sub(1, Ordering::Relaxed) == 1 {
-            self.replacer.set_evictable(*i, true);
+            self.replacer.lock().await.set_evictable(i, true);
         }
     }
 
@@ -183,7 +216,11 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
 
     pub async fn flush_current(&mut self) {
         let current = self.current.write().await;
-        self.disk.write_page(&current);
+        self.disk
+            .write()
+            .await
+            .write_page(&current)
+            .expect("Couldn't write page");
     }
 }
 
