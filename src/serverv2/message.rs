@@ -23,7 +23,7 @@ pub enum Message {
 }
 
 impl Message {
-    pub async fn exec(&self, m: &mut PageManager, kd: &Arc<RwLock<KeyDir>>) -> Message {
+    pub async fn exec(&self, m: &PageManager, kd: &Arc<RwLock<KeyDir>>) -> Message {
         match self {
             Message::Insert(k, v) => {
                 let mut current = m.get_current().await;
