@@ -67,6 +67,6 @@ pub async fn accept_loop(
 
         let res = message.exec(&m, &kd).await;
 
-        conn.write(&Into::<Bytes>::into(res)).await?;
+        conn.write(res).await?;
     }
 }

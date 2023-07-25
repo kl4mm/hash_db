@@ -1,6 +1,6 @@
 use std::io;
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
 use crate::serverv2::message::Message;
@@ -36,8 +36,9 @@ where
         }
     }
 
-    pub async fn write(&mut self, b: &[u8]) -> io::Result<()> {
-        self.w.write_all(b).await?;
+    pub async fn write(&mut self, m: Message) -> io::Result<()> {
+        let b: Bytes = m.into();
+        self.w.write_all(&b).await?;
         self.w.flush().await?;
 
         Ok(())
