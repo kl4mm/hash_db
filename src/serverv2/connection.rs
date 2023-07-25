@@ -1,7 +1,7 @@
 use std::io;
 
-use bytes::BytesMut;
-use tokio::io::{AsyncRead, AsyncWrite, BufReader, BufWriter};
+use bytes::{Buf, BytesMut};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 
 use crate::serverv2::message::Message;
 
@@ -23,38 +23,23 @@ where
     }
 
     pub async fn read(&mut self) -> io::Result<Option<Message>> {
-        // loop {
-        //     if let Some(message) = Message::parse(&self.buf) {
-        //         self.buf.advance(message.len());
+        loop {
+            if let Some(message) = Message::parse(&self.buf) {
+                self.buf.advance(message.len());
 
-        //         return Ok(Some(message));
-        //     }
+                return Ok(Some(message));
+            }
 
-        //     if 0 == self.reader.read_buf(&mut self.buf).await? {
-        //         // if self.buf.is_empty() {
-        //         //     return Ok(None);
-        //         // } else {
-        //         return Err(io::Error::from(io::ErrorKind::ConnectionReset));
-        //         // }
-        //     }
-        // }
-        todo!()
+            if 0 == self.r.read_buf(&mut self.buf).await? {
+                return Err(io::Error::from(io::ErrorKind::ConnectionReset));
+            }
+        }
     }
 
     pub async fn write(&mut self, b: &[u8]) -> io::Result<()> {
-        // match message {
-        //     Message::Query { raw } => {
-        //         log::info!("Executing: {}", raw);
-        //     }
-        //     Message::Error { message } => {
-        //         self.writer.write_u16(message::ERROR).await?;
-        //         self.writer.write_u16(message.len() as u16).await?;
-        //         self.writer.write(message.as_bytes()).await?;
-        //         self.writer.flush().await?;
-        //     }
-        // }
-        // Ok(())
+        self.w.write_all(b).await?;
+        self.w.flush().await?;
 
-        todo!()
+        Ok(())
     }
 }

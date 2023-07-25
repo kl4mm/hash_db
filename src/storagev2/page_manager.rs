@@ -79,7 +79,7 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
     }
 
     pub async fn replace_page(
-        &mut self,
+        &self,
         current: &mut RwLockWriteGuard<'_, Page<PAGE_SIZE>>,
     ) -> io::Result<()> {
         self.disk.write().await.write_page(&current)?;
@@ -251,7 +251,7 @@ mod test {
         let offset_b = page_w.write_entry(&entry_b).expect("should not be full");
 
         assert!(offset_a == 0);
-        assert!(offset_b == entry_a.len());
+        assert!(offset_b as usize == entry_a.len());
         drop(page_w);
 
         let page_r = m.fetch_page(0).await.expect("should fetch current page");

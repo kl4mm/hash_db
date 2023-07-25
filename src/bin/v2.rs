@@ -2,7 +2,7 @@ use std::{io, net::SocketAddr, sync::Arc};
 
 use bytes::Bytes;
 use hash_db::{
-    serverv2::connection::Connection,
+    serverv2::{connection::Connection, message::Message},
     storagev2::{
         disk::Disk,
         key_dir::{self, KeyDir},
@@ -49,7 +49,7 @@ pub async fn accept(stream: TcpStream, addr: SocketAddr, m: PageManager, kd: Arc
 pub async fn accept_loop(
     stream: TcpStream,
     addr: SocketAddr,
-    m: PageManager,
+    mut m: PageManager,
     kd: Arc<RwLock<KeyDir>>,
 ) -> io::Result<()> {
     let (reader, writer) = stream.into_split();
@@ -60,11 +60,12 @@ pub async fn accept_loop(
 
     loop {
         let message = match conn.read().await? {
-            Some(q) => q,
+            Some(m) if m == Message::None => continue,
+            Some(m) => m,
             None => continue,
         };
 
-        let res = message.exec(&m, &kd).await;
+        let res = message.exec(&mut m, &kd).await;
 
         conn.write(&Into::<Bytes>::into(res)).await?;
     }

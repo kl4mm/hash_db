@@ -18,7 +18,7 @@ macro_rules! get_bytes {
     };
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum PageError {
     NotEnoughSpace,
 }
@@ -57,7 +57,7 @@ impl<const SIZE: usize> Page<SIZE> {
         }
     }
 
-    pub fn write_entry(&mut self, entry: &Entry) -> Result<usize, PageError> {
+    pub fn write_entry(&mut self, entry: &Entry) -> Result<u64, PageError> {
         let len = entry.len();
         let offset = self.len.fetch_add(len, Ordering::Relaxed);
         if offset + len > SIZE {
@@ -66,7 +66,7 @@ impl<const SIZE: usize> Page<SIZE> {
 
         put_bytes!(self.data, entry.as_bytes(), offset, len);
 
-        Ok(offset)
+        Ok(offset as u64)
     }
 
     // TODO: handle invalid bounds

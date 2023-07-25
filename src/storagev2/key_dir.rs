@@ -10,6 +10,12 @@ pub struct KeyData {
     offset: u64,
 }
 
+impl KeyData {
+    pub fn new(page_id: PageID, offset: u64) -> Self {
+        Self { page_id, offset }
+    }
+}
+
 type KeyDirMap = HashMap<BytesMut, KeyData>;
 
 #[derive(Debug, PartialEq)]
