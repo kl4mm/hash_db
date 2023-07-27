@@ -1,6 +1,6 @@
 use std::{io::Cursor, str, sync::Arc};
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use tokio::sync::RwLock;
 
 use crate::storagev2::{
@@ -19,6 +19,7 @@ pub enum Message {
     Result(Bytes, Bytes),
 
     Success,
+    Ignore(usize),
     None,
 }
 
@@ -59,7 +60,9 @@ impl Message {
                 Message::Result(entry.key.into(), entry.value.into())
             }
 
-            Message::Result(_, _) | Message::Success | Message::None => unreachable!(),
+            Message::Result(_, _) | Message::Success | Message::Ignore(_) | Message::None => {
+                Message::None
+            }
         }
     }
 
@@ -67,13 +70,17 @@ impl Message {
         dbg!(std::str::from_utf8(buf).unwrap());
         let mut buf = Cursor::new(buf);
 
+        if buf.get_ref()[..].starts_with(b"\n") {
+            return Some(Message::Ignore(1));
+        }
+
         // check for "get " first
         if buf.remaining() <= 4 {
             return None;
         }
 
-        let maybe_get = str::from_utf8(&buf.get_ref()[0..3]).unwrap();
-        if maybe_get == "get" {
+        let maybe_get = &buf.get_ref()[0..3];
+        if maybe_get == b"get" {
             buf.advance(4);
             let Some(key) = read_until(&buf, b'\n') else { return None };
 
@@ -84,9 +91,9 @@ impl Message {
         if buf.remaining() < 7 {
             return None;
         }
-        let maybe_insert_or_delete = str::from_utf8(&buf.get_ref()[0..6]).unwrap();
+        let maybe_insert_or_delete = &buf.get_ref()[0..6];
         match maybe_insert_or_delete {
-            "insert" => {
+            b"insert" => {
                 buf.advance(7);
                 let Some(key) = read_until(&buf, b' ') else { return None };
                 buf.advance(key.len() + 1);
@@ -94,7 +101,7 @@ impl Message {
 
                 Some(Message::Insert(key, value))
             }
-            "delete" => {
+            b"delete" => {
                 buf.advance(7);
                 let Some(key) = read_until(&buf, b'\n') else { return None };
 
@@ -112,6 +119,7 @@ impl Message {
 
             Message::Result(k, v) => k.len() + v.len() + 1,
             Message::Success => 8,
+            Message::Ignore(l) => *l,
             Message::None => 0,
         }
     }
@@ -135,17 +143,20 @@ fn read_until(cursor: &Cursor<&[u8]>, c: u8) -> Option<Bytes> {
 impl Into<Bytes> for Message {
     fn into(self) -> Bytes {
         match self {
-            Message::Insert(_, _) | Message::Delete(_) | Message::Get(_) | Message::None => {
-                unreachable!()
-            }
+            Message::Insert(_, _)
+            | Message::Delete(_)
+            | Message::Get(_)
+            | Message::Ignore(_)
+            | Message::None => Bytes::new(),
 
-            Message::Result(mut k, mut v) => {
-                // Might need to advance dst?
-                let mut dst = BytesMut::with_capacity(k.len() + v.len() + 2);
-                k.copy_to_slice(&mut dst);
-                dst.put_u8(b'\0');
-                v.copy_to_slice(&mut dst);
-                dst.put_u8(b'\n');
+            Message::Result(k, v) => {
+                let len = k.len() + v.len() + 3;
+                let mut dst = BytesMut::zeroed(len);
+
+                crate::put_bytes!(dst, k, 0, k.len());
+                dst[k.len()] = b' ';
+                crate::put_bytes!(dst, v, k.len() + 1, v.len());
+                dst[len - 1] = b'\n';
 
                 dst.into()
             }

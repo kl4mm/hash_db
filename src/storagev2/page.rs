@@ -6,6 +6,7 @@ use crate::storagev2::log::Entry;
 
 pub type PageID = u32;
 
+#[macro_export]
 macro_rules! put_bytes {
     ($dst:expr, $src:expr, $o:expr, $l:expr) => {
         $dst[$o as usize..$o as usize + $l as usize].copy_from_slice(&$src);
