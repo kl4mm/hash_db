@@ -7,10 +7,12 @@ use std::{
     },
 };
 
-use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
 
 use crate::storagev2::{
     disk::Disk,
+    key_dir::KeyData,
+    log::Entry,
     page::{Page, PageID},
     replacer::LrukReplacer,
 };
@@ -32,20 +34,10 @@ pub struct PageManager<
     disk: Arc<RwLock<Disk>>,
     page_table: Arc<RwLock<HashMap<PageID, PageIndex>>>, // Map page ids to index
     current: Arc<RwLock<Page<PAGE_SIZE>>>,
-    read: *mut [Option<RwLock<Page<PAGE_SIZE>>>; READ_SIZE], // Read only pages
+    read: Arc<RwLock<[Option<Page<PAGE_SIZE>>]>>,
     free: Arc<Mutex<Vec<usize>>>,
     next_id: Arc<AtomicUsize>,
     replacer: Arc<Mutex<LrukReplacer>>,
-}
-
-unsafe impl<const PAGE_SIZE: usize, const READ_SIZE: usize> Send
-    for PageManager<PAGE_SIZE, READ_SIZE>
-{
-}
-
-unsafe impl<const PAGE_SIZE: usize, const READ_SIZE: usize> Sync
-    for PageManager<PAGE_SIZE, READ_SIZE>
-{
 }
 
 impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ_SIZE> {
@@ -58,7 +50,8 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
             current_page_id,
             PageIndex::Write,
         )])));
-        let read = Box::into_raw(Box::new(std::array::from_fn(|_| None)));
+        let read: Arc<RwLock<[_; READ_SIZE]>> =
+            Arc::new(RwLock::new(std::array::from_fn(|_| None)));
         let next_id = Arc::new(AtomicUsize::new(1));
         let free = Arc::new(Mutex::new((0..READ_SIZE).rev().collect()));
         let replacer = Arc::new(Mutex::new(LrukReplacer::new(2)));
@@ -98,7 +91,8 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
         Ok(())
     }
 
-    pub async fn new_page<'a>(&mut self) -> Option<RwLockReadGuard<'a, Page<PAGE_SIZE>>> {
+    // Not used?
+    pub async fn new_page<'a>(&mut self) -> Option<PageID> {
         let i = if let Some(i) = self.free.lock().await.pop() {
             i
         } else {
@@ -121,48 +115,36 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
             .await
             .insert(page_id, PageIndex::Read(i));
 
-        let page_r = unsafe {
-            let mut _page_w;
-            if let Some(page) = &(*self.read)[i] {
-                self.page_table.write().await.remove(&page_id);
-                _page_w = page.write().await;
-            }
+        let id = page.id;
+        self.read.write().await[i].replace(page);
 
-            (*self.read)[i].replace(RwLock::new(page));
-            (*self.read)[i].as_ref().unwrap().read().await
-        };
-
-        Some(page_r)
+        Some(id)
     }
 
-    pub async fn fetch_page(
-        &mut self,
-        page_id: PageID,
-    ) -> Option<RwLockReadGuard<'_, Page<PAGE_SIZE>>> {
-        if let Some(i) = self.page_table.read().await.get(&page_id) {
+    pub async fn fetch_entry(&self, kd: &KeyData) -> Option<Entry> {
+        if let Some(i) = self.page_table.read().await.get(&kd.page_id) {
             return match i {
                 PageIndex::Write => {
                     let page = self.current.as_ref().read().await;
-                    Some(page)
+
+                    page.read_entry(kd.offset as usize)
                 }
-                PageIndex::Read(i) => unsafe {
+                PageIndex::Read(i) => {
                     assert!(*i < READ_SIZE);
                     self.replacer.lock().await.record_access(*i);
 
-                    let page = (*self.read)[*i]
-                        .as_ref()
-                        .expect("Invalid page index in table")
-                        .read()
-                        .await;
-                    page.pin();
-                    Some(page)
-                },
+                    let pages = self.read.read().await;
+                    let page = pages[*i].as_ref().expect("Invalid page index in table");
+
+                    page.read_entry(kd.offset as usize)
+                }
             };
         };
 
         let i = if let Some(i) = self.free.lock().await.pop() {
             i
         } else {
+            // TODO: Should return an error here
             let Some(i) = self.replacer.lock().await.evict() else { return None };
             self.replacer.lock().await.record_access(i);
 
@@ -170,27 +152,21 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
         };
 
         assert!(i < READ_SIZE);
-        unsafe {
-            let mut _page_w;
-            if let Some(page) = &(*self.read)[i] {
-                self.page_table.write().await.remove(&page_id);
-                _page_w = page.write().await;
-            }
-
-            let page = self
-                .disk
-                .read()
-                .await
-                .read_page::<PAGE_SIZE>(page_id)
-                .expect("Couldn't read page");
-
-            // If we hold a write lock to the page we're going to replace, this should be safe
-            (*self.read)[i].replace(RwLock::new(page));
-
-            let page = (*self.read)[i].as_ref().unwrap().read().await;
-            page.pin();
-            Some(page)
+        if let Some(_) = &self.read.read().await[i] {
+            self.page_table.write().await.remove(&kd.page_id);
         }
+
+        let page = self
+            .disk
+            .read()
+            .await
+            .read_page::<PAGE_SIZE>(kd.page_id)
+            .expect("Couldn't read page");
+
+        let entry = page.read_entry(kd.offset as usize);
+        self.read.write().await[i].replace(page);
+
+        entry
     }
 
     pub async fn unpin_page(&mut self, page_id: PageID) {
@@ -199,11 +175,12 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
 
         let i = match i {
             PageIndex::Read(i) => *i,
-            _ => todo!(),
+            _ => unreachable!("Can't unpin write page"),
         };
         drop(page_table);
 
-        let page = unsafe { (*self.read)[i].as_ref().unwrap().read().await };
+        let pages = self.read.read().await;
+        let page = pages[i].as_ref().expect("Invalid page index in table");
 
         if page.pins.fetch_sub(1, Ordering::Relaxed) == 1 {
             self.replacer.lock().await.set_evictable(i, true);
@@ -230,6 +207,7 @@ mod test {
 
     use crate::storagev2::{
         disk::Disk,
+        key_dir::KeyData,
         log::{Entry, EntryType},
         page_manager::{PageManager, DEFAULT_PAGE_SIZE, DEFAULT_READ_SIZE},
         test::CleanUp,
@@ -241,7 +219,7 @@ mod test {
         let _cu = CleanUp::file(DB_FILE);
         let disk = Disk::new(DB_FILE).await?;
 
-        let mut m = PageManager::<DEFAULT_PAGE_SIZE, DEFAULT_READ_SIZE>::new(disk);
+        let m = PageManager::<DEFAULT_PAGE_SIZE, DEFAULT_READ_SIZE>::new(disk);
 
         let mut page_w = m.get_current().await;
 
@@ -254,12 +232,23 @@ mod test {
         assert!(offset_b as usize == entry_a.len());
         drop(page_w);
 
-        let page_r = m.fetch_page(0).await.expect("should fetch current page");
+        let kda = KeyData {
+            page_id: 0,
+            offset: 0,
+        };
+        let kdb = KeyData {
+            page_id: 0,
+            offset: entry_a.len() as u64,
+        };
+        let got_a = m
+            .fetch_entry(&kda)
+            .await
+            .expect("should fetch current page");
 
-        let got_a = page_r.read_entry(0).expect("got_a should not be empty");
-        let got_b = page_r
-            .read_entry(entry_a.len())
-            .expect("got_b should not be empty");
+        let got_b = m
+            .fetch_entry(&kdb)
+            .await
+            .expect("should fetch current page");
 
         assert!(
             entry_a == got_a,
@@ -289,16 +278,29 @@ mod test {
         let _ = m.new_page().await.expect("should have space for page 2"); // ts = 1
         let _ = m.new_page().await.expect("should have space for page 3"); // ts = 2
 
-        m.fetch_page(1).await; // ts = 3
-        m.fetch_page(2).await; // ts = 4
-        m.fetch_page(1).await; // ts = 5
+        let kd1 = KeyData {
+            page_id: 1,
+            offset: 0,
+        };
+        let kd2 = KeyData {
+            page_id: 2,
+            offset: 0,
+        };
+        let kd3 = KeyData {
+            page_id: 3,
+            offset: 0,
+        };
 
-        m.fetch_page(1).await; // ts = 6
-        m.fetch_page(2).await; // ts = 7
-        m.fetch_page(1).await; // ts = 8
-        m.fetch_page(2).await; // ts = 9
+        m.fetch_entry(&kd1).await; // ts = 3
+        m.fetch_entry(&kd2).await; // ts = 4
+        m.fetch_entry(&kd1).await; // ts = 5
 
-        m.fetch_page(3).await; // ts = 10 - Least accessed, should get evicted
+        m.fetch_entry(&kd1).await; // ts = 6
+        m.fetch_entry(&kd2).await; // ts = 7
+        m.fetch_entry(&kd1).await; // ts = 8
+        m.fetch_entry(&kd2).await; // ts = 9
+
+        m.fetch_entry(&kd3).await; // ts = 10 - Least accessed, should get evicted
 
         m.unpin_page(1).await;
         m.unpin_page(1).await;
@@ -314,15 +316,15 @@ mod test {
         m.unpin_page(3).await;
         m.unpin_page(3).await;
 
-        let new_page = m.new_page().await.expect("a page should have been evicted");
-        assert!(new_page.id == 4);
+        let new_page_id = m.new_page().await.expect("a page should have been evicted");
+        assert!(new_page_id == 4);
 
-        let pages = unsafe { &(*m.read) };
+        let pages = m.read.read().await;
         let expected_ids = vec![1, 2, 4];
         let mut actual_ids = Vec::new();
         for page in pages.iter() {
             if let Some(page) = page {
-                actual_ids.push(page.read().await.id)
+                actual_ids.push(page.id)
             }
         }
 

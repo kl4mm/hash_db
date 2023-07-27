@@ -1,12 +1,11 @@
 use std::{io, net::SocketAddr, sync::Arc};
 
-use bytes::Bytes;
 use hash_db::{
     serverv2::{connection::Connection, message::Message},
     storagev2::{
         disk::Disk,
         key_dir::{self, KeyDir},
-        page_manager::{PageManager, DEFAULT_PAGE_SIZE, DEFAULT_READ_SIZE},
+        page_manager::{PageManager, DEFAULT_PAGE_SIZE},
     },
 };
 use tokio::{
@@ -24,7 +23,7 @@ async fn main() {
     let kd = Arc::new(RwLock::new(kd));
 
     // TODO: latest page params?
-    let m = PageManager::<DEFAULT_PAGE_SIZE, DEFAULT_READ_SIZE>::new(disk);
+    let m = PageManager::new(disk);
 
     let listener = TcpListener::bind("0.0.0.0:4444")
         .await
@@ -48,8 +47,8 @@ pub async fn accept(stream: TcpStream, addr: SocketAddr, m: PageManager, kd: Arc
 
 pub async fn accept_loop(
     stream: TcpStream,
-    addr: SocketAddr,
-    mut m: PageManager,
+    _addr: SocketAddr,
+    m: PageManager,
     kd: Arc<RwLock<KeyDir>>,
 ) -> io::Result<()> {
     let (reader, writer) = stream.into_split();

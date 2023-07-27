@@ -6,8 +6,8 @@ use crate::storagev2::{disk::Disk, log::EntryType, page::PageID};
 
 #[derive(Debug, PartialEq)]
 pub struct KeyData {
-    page_id: PageID,
-    offset: u64,
+    pub page_id: PageID,
+    pub offset: u64,
 }
 
 impl KeyData {

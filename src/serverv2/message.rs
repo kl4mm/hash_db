@@ -10,7 +10,7 @@ use crate::storagev2::{
     page_manager::PageManager,
 };
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum Message {
     Insert(Bytes, Bytes),
     Delete(Bytes),
@@ -49,31 +49,45 @@ impl Message {
                 Message::Success
             }
             Message::Delete(_) => todo!(),
-            Message::Get(_) => todo!(),
+            Message::Get(k) => {
+                let kd = kd.read().await;
+                let Some(data) = kd.get(k) else { return Message::None };
+
+                // TODO: return error if replacer couldn't replace
+                let Some(entry) = m.fetch_entry(data).await else { return Message::None };
+
+                Message::Result(entry.key.into(), entry.value.into())
+            }
 
             Message::Result(_, _) | Message::Success | Message::None => unreachable!(),
         }
     }
 
     pub fn parse(buf: &[u8]) -> Option<Self> {
+        dbg!(std::str::from_utf8(buf).unwrap());
         let mut buf = Cursor::new(buf);
-        if buf.remaining() < 3 {
+
+        // check for "get " first
+        if buf.remaining() <= 4 {
             return None;
         }
 
         let maybe_get = str::from_utf8(&buf.get_ref()[0..3]).unwrap();
         if maybe_get == "get" {
+            buf.advance(4);
             let Some(key) = read_until(&buf, b'\n') else { return None };
 
             return Some(Message::Get(key.into()));
         }
 
-        if buf.remaining() < 6 {
+        // check for "insert " or "delete "
+        if buf.remaining() < 7 {
             return None;
         }
         let maybe_insert_or_delete = str::from_utf8(&buf.get_ref()[0..6]).unwrap();
         match maybe_insert_or_delete {
             "insert" => {
+                buf.advance(7);
                 let Some(key) = read_until(&buf, b' ') else { return None };
                 buf.advance(key.len() + 1);
                 let Some(value) = read_until(&buf, b'\n') else { return None };
@@ -81,6 +95,7 @@ impl Message {
                 Some(Message::Insert(key, value))
             }
             "delete" => {
+                buf.advance(7);
                 let Some(key) = read_until(&buf, b'\n') else { return None };
 
                 return Some(Message::Delete(key.into()));
@@ -91,7 +106,7 @@ impl Message {
 
     pub fn len(&self) -> usize {
         match self {
-            Message::Insert(k, v) => 8 + k.len() + v.len(),
+            Message::Insert(k, v) => 9 + k.len() + v.len(),
             Message::Delete(k) => 7 + k.len(),
             Message::Get(k) => 5 + k.len(),
 
@@ -104,7 +119,7 @@ impl Message {
 
 fn read_until(cursor: &Cursor<&[u8]>, c: u8) -> Option<Bytes> {
     let start = cursor.position() as usize;
-    let end = cursor.get_ref().len() - 1;
+    let end = cursor.get_ref().len();
 
     for i in start..end {
         if cursor.get_ref()[i] == c {
