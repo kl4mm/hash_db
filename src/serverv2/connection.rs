@@ -38,7 +38,6 @@ where
     }
 
     pub async fn write(&mut self, m: Message) -> io::Result<()> {
-        eprintln!("{:?}", &m);
         let b: Bytes = m.into();
         self.w.write_all(&b).await?;
         self.w.flush().await?;

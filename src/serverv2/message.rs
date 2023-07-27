@@ -49,7 +49,25 @@ impl Message {
 
                 Message::Success
             }
-            Message::Delete(_) => todo!(),
+            Message::Delete(k) => {
+                let mut current = m.get_current().await;
+
+                let entry = Entry::new(k, &[], EntryType::Delete);
+                if let Err(e) = current.write_entry(&entry) {
+                    if e == PageError::NotEnoughSpace {
+                        if let Err(e) = m.replace_page(&mut current).await {
+                            todo!()
+                        }
+                        current.write_entry(&entry).unwrap();
+                    } else {
+                        todo!()
+                    }
+                };
+
+                kd.write().await.remove(k);
+
+                Message::Success
+            }
             Message::Get(k) => {
                 let kd = kd.read().await;
                 let Some(data) = kd.get(k) else { return Message::None };
@@ -67,7 +85,6 @@ impl Message {
     }
 
     pub fn parse(buf: &[u8]) -> Option<Self> {
-        dbg!(std::str::from_utf8(buf).unwrap());
         let mut buf = Cursor::new(buf);
 
         if buf.get_ref()[..].starts_with(b"\n") {
