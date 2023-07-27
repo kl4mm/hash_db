@@ -124,7 +124,9 @@ impl Message {
 
                 return Some(Message::Delete(key.into()));
             }
-            _ => None,
+            _ => {
+                return Some(Message::Ignore(buf.get_ref().len()));
+            }
         }
     }
 

@@ -25,7 +25,6 @@ where
     pub async fn read(&mut self) -> io::Result<Option<Message>> {
         loop {
             if let Some(message) = Message::parse(&self.buf) {
-                eprintln!("{:?}", message);
                 self.buf.advance(message.len());
 
                 return Ok(Some(message));
