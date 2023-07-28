@@ -11,6 +11,7 @@ use hash_db::{
 use tokio::{
     io::{BufReader, BufWriter},
     net::{TcpListener, TcpStream},
+    signal,
     sync::RwLock,
 };
 
@@ -27,6 +28,16 @@ async fn main() {
     let listener = TcpListener::bind("0.0.0.0:4444")
         .await
         .expect("Could not bind");
+
+    let mut _m = m.clone();
+    tokio::spawn(async move {
+        if let Err(e) = signal::ctrl_c().await {
+            eprintln!("Signal error: {}", e);
+        }
+
+        _m.flush_current().await;
+        std::process::exit(0);
+    });
 
     loop {
         match listener.accept().await {
