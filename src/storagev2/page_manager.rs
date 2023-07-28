@@ -165,6 +165,10 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
             .expect("Couldn't read page");
 
         let entry = page.read_entry(kd.offset as usize);
+        self.page_table
+            .write()
+            .await
+            .insert(page.id, PageIndex::Read(i));
         self.read.write().await[i].replace(page);
 
         entry
