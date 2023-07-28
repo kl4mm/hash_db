@@ -2,7 +2,11 @@ use std::collections::HashMap;
 
 use bytes::BytesMut;
 
-use crate::storagev2::{disk::Disk, log::EntryType, page::PageID};
+use crate::storagev2::{
+    disk::Disk,
+    log::EntryType,
+    page::{Page, PageID},
+};
 
 #[derive(Debug, PartialEq)]
 pub struct KeyData {
@@ -39,13 +43,14 @@ impl KeyDir {
     }
 }
 
-pub async fn bootstrap<const PAGE_SIZE: usize>(disk: &Disk) -> KeyDir {
+pub async fn bootstrap<const PAGE_SIZE: usize>(disk: &Disk) -> (KeyDir, Page<PAGE_SIZE>) {
     let len = disk.len().await;
     let pages = len / PAGE_SIZE;
 
+    let mut page = Page::new(0);
     let mut inner = HashMap::new();
     for page_id in 0..pages as u32 {
-        let page = disk
+        page = disk
             .read_page::<PAGE_SIZE>(page_id)
             .expect("should read page");
 
@@ -70,7 +75,7 @@ pub async fn bootstrap<const PAGE_SIZE: usize>(disk: &Disk) -> KeyDir {
         }
     }
 
-    KeyDir { inner }
+    (KeyDir { inner }, page)
 }
 
 #[cfg(test)]
@@ -118,7 +123,7 @@ mod test {
         }
         disk.write_page(&current).expect("failed to write page");
 
-        let key_dir = bootstrap::<PAGE_SIZE>(&disk).await;
+        let (key_dir, _) = bootstrap::<PAGE_SIZE>(&disk).await;
 
         let expected = KeyDir {
             inner: HashMap::from([

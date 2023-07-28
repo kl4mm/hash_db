@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     io,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU32, AtomicUsize, Ordering},
         Arc,
     },
 };
@@ -36,25 +36,26 @@ pub struct PageManager<
     current: Arc<RwLock<Page<PAGE_SIZE>>>,
     read: Arc<RwLock<[Option<Page<PAGE_SIZE>>]>>,
     free: Arc<Mutex<Vec<usize>>>,
-    next_id: Arc<AtomicUsize>,
+    next_id: Arc<AtomicU32>,
     replacer: Arc<Mutex<LrukReplacer>>,
 }
 
 impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ_SIZE> {
-    pub fn new(disk: Disk) -> Self {
+    pub fn new(disk: Disk, lruk: usize, latest: Page<PAGE_SIZE>) -> Self {
         // TODO: bootstrap process could give us the write page and next_id
+        let next_id = latest.id + 1;
         let disk = Arc::new(RwLock::new(disk));
         let current_page_id = 0;
-        let current = Arc::new(RwLock::new(Page::<PAGE_SIZE>::new(current_page_id)));
+        let current = Arc::new(RwLock::new(latest));
         let page_table = Arc::new(RwLock::new(HashMap::from([(
             current_page_id,
             PageIndex::Write,
         )])));
         let read: Arc<RwLock<[_; READ_SIZE]>> =
             Arc::new(RwLock::new(std::array::from_fn(|_| None)));
-        let next_id = Arc::new(AtomicUsize::new(1));
+        let next_id = Arc::new(AtomicU32::new(next_id));
         let free = Arc::new(Mutex::new((0..READ_SIZE).rev().collect()));
-        let replacer = Arc::new(Mutex::new(LrukReplacer::new(2)));
+        let replacer = Arc::new(Mutex::new(LrukReplacer::new(lruk)));
 
         Self {
             disk,
@@ -68,7 +69,7 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
     }
 
     pub fn inc_id(&self) -> PageID {
-        self.next_id.fetch_add(1, Ordering::Relaxed) as u32
+        self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
     pub async fn replace_page(
@@ -209,6 +210,7 @@ mod test {
         disk::Disk,
         key_dir::KeyData,
         log::{Entry, EntryType},
+        page::Page,
         page_manager::{PageManager, DEFAULT_PAGE_SIZE, DEFAULT_READ_SIZE},
         test::CleanUp,
     };
@@ -219,7 +221,7 @@ mod test {
         let _cu = CleanUp::file(DB_FILE);
         let disk = Disk::new(DB_FILE).await?;
 
-        let m = PageManager::<DEFAULT_PAGE_SIZE, DEFAULT_READ_SIZE>::new(disk);
+        let m = PageManager::<DEFAULT_PAGE_SIZE, DEFAULT_READ_SIZE>::new(disk, 2, Page::new(0));
 
         let mut page_w = m.get_current().await;
 
@@ -272,7 +274,7 @@ mod test {
         let _cu = CleanUp::file(DB_FILE);
         let disk = Disk::new(DB_FILE).await?;
 
-        let mut m = PageManager::<DEFAULT_PAGE_SIZE, 3>::new(disk);
+        let mut m = PageManager::<DEFAULT_PAGE_SIZE, 3>::new(disk, 2, Page::new(0));
 
         let _ = m.new_page().await.expect("should have space for page 1"); // ts = 0
         let _ = m.new_page().await.expect("should have space for page 2"); // ts = 1
@@ -317,7 +319,7 @@ mod test {
         m.unpin_page(3).await;
 
         let new_page_id = m.new_page().await.expect("a page should have been evicted");
-        assert!(new_page_id == 4);
+        assert!(new_page_id == 4, "Got: {}", new_page_id);
 
         let pages = m.read.read().await;
         let expected_ids = vec![1, 2, 4];

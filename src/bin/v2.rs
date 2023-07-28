@@ -19,11 +19,10 @@ const DB_FILE: &str = "main.db";
 #[tokio::main]
 async fn main() {
     let disk = Disk::new(DB_FILE).await.expect("Failed to open db file");
-    let kd = key_dir::bootstrap::<DEFAULT_PAGE_SIZE>(&disk).await;
+    let (kd, latest) = key_dir::bootstrap::<DEFAULT_PAGE_SIZE>(&disk).await;
     let kd = Arc::new(RwLock::new(kd));
 
-    // TODO: latest page params?
-    let m = PageManager::new(disk);
+    let m = PageManager::new(disk, 2, latest);
 
     let listener = TcpListener::bind("0.0.0.0:4444")
         .await
