@@ -45,12 +45,8 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
         // TODO: bootstrap process could give us the write page and next_id
         let next_id = latest.id + 1;
         let disk = Arc::new(RwLock::new(disk));
-        let current_page_id = 0;
+        let page_table = Arc::new(RwLock::new(HashMap::from([(latest.id, PageIndex::Write)])));
         let current = Arc::new(RwLock::new(latest));
-        let page_table = Arc::new(RwLock::new(HashMap::from([(
-            current_page_id,
-            PageIndex::Write,
-        )])));
         let read: Arc<RwLock<[_; READ_SIZE]>> =
             Arc::new(RwLock::new(std::array::from_fn(|_| None)));
         let next_id = Arc::new(AtomicU32::new(next_id));
