@@ -1,65 +1,82 @@
-use std::io;
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{io, net::SocketAddr, sync::Arc};
 
-use tokio::io::{AsyncBufReadExt, BufReader, BufWriter};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::RwLock;
+use hash_db::{
+    serverv2::{connection::Connection, message::Message},
+    storagev2::{
+        disk::Disk,
+        key_dir::{self, KeyDir},
+        page_manager::{PageManager, DEFAULT_PAGE_SIZE},
+    },
+};
+use tokio::{
+    io::{BufReader, BufWriter},
+    net::{TcpListener, TcpStream},
+    signal,
+    sync::RwLock,
+};
 
-use hash_db::command::Command;
-use hash_db::db;
-use hash_db::key_dir;
-
-const MAX_FILE_SIZE: u64 = 64;
-const DB_PATH: &str = "db/";
-const COMPACTION_INTERVAL: u64 = 5 * 60;
-
-use crate::key_dir::KeyDir;
+const DB_FILE: &str = "main.db";
 
 #[tokio::main]
-async fn main() -> io::Result<()> {
-    let key_dir = key_dir::bootstrap(DB_PATH, MAX_FILE_SIZE).await?;
-    tokio::spawn(db::compaction_loop(
-        key_dir.clone(),
-        Duration::from_secs(COMPACTION_INTERVAL),
-    ));
+async fn main() {
+    let disk = Disk::new(DB_FILE).await.expect("Failed to open db file");
+    let (kd, latest) = key_dir::bootstrap::<DEFAULT_PAGE_SIZE>(&disk).await;
+    let kd = Arc::new(RwLock::new(kd));
+
+    let m = PageManager::new(disk, 2, latest);
 
     let listener = TcpListener::bind("0.0.0.0:4444")
         .await
-        .expect("could not bind address");
+        .expect("Could not bind");
+
+    let mut _m = m.clone();
+    tokio::spawn(async move {
+        if let Err(e) = signal::ctrl_c().await {
+            eprintln!("signal error: {}", e);
+        }
+
+        _m.flush_current().await;
+        std::process::exit(0);
+    });
 
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
-                tokio::spawn(accept_loop(stream, addr, key_dir.clone()));
+                tokio::spawn(accept(stream, addr, m.clone(), kd.clone()));
             }
-            Err(e) => eprintln!("ERROR: {e}"),
+            Err(e) => eprintln!("ERROR: {}", e),
         }
     }
 }
 
-async fn accept_loop(
-    mut stream: TcpStream,
-    addr: SocketAddr,
-    key_dir: Arc<RwLock<KeyDir>>,
+pub async fn accept(stream: TcpStream, addr: SocketAddr, m: PageManager, kd: Arc<RwLock<KeyDir>>) {
+    if let Err(e) = accept_loop(stream, addr, m, kd).await {
+        eprintln!("ERROR: {}", e);
+    }
+}
+
+pub async fn accept_loop(
+    stream: TcpStream,
+    _addr: SocketAddr,
+    m: PageManager,
+    kd: Arc<RwLock<KeyDir>>,
 ) -> io::Result<()> {
-    eprintln!("Client connected: {}", addr);
+    let (reader, writer) = stream.into_split();
+    let reader = BufReader::new(reader);
+    let writer = BufWriter::new(writer);
 
-    let (reader, writer) = stream.split();
-    let mut reader = BufReader::new(reader);
-    let mut writer = BufWriter::new(writer);
+    let mut conn = Connection::new(reader, writer);
 
-    let mut buf = String::new();
     loop {
-        reader.read_line(&mut buf).await?;
+        let message = match conn.read().await? {
+            Some(m) if m == Message::None => continue,
+            Some(m) => m,
+            None => continue,
+        };
 
-        if let Err(e) = Command::handle(buf.as_str().into(), &key_dir, &mut writer).await {
-            eprintln!("Client disconnected: {}", addr);
+        let res = message.exec(&m, &kd).await;
 
-            break Ok(());
-        }
-
-        buf.clear();
+        conn.write(res).await?;
     }
 }
+

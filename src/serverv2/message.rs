@@ -1,4 +1,4 @@
-use std::{io::Cursor, str, sync::Arc};
+use std::{io::Cursor, sync::Arc};
 
 use bytes::{Buf, Bytes, BytesMut};
 use tokio::sync::RwLock;
