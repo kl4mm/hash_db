@@ -46,10 +46,18 @@ impl<const SIZE: usize> Page<SIZE> {
         }
     }
 
-    pub fn from_bytes(id: PageID, data: BytesMut, len: usize) -> Self {
-        let pins = AtomicU32::new(0);
-        let len = AtomicUsize::new(len);
+    pub fn from_bytes(id: PageID, data: BytesMut) -> Self {
+        let mut empty = 0;
+        for i in (0..data.len()).rev() {
+            if data[i] != b'\0' {
+                break;
+            }
 
+            empty += 1;
+        }
+
+        let pins = AtomicU32::new(0);
+        let len = AtomicUsize::new(SIZE - empty);
         Self {
             id,
             data,

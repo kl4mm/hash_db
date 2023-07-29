@@ -27,7 +27,7 @@ impl Disk {
         let fd = self.file.as_raw_fd();
 
         let mut buf = BytesMut::zeroed(SIZE);
-        let n = match uio::pread(fd, &mut buf, offset) {
+        let _n = match uio::pread(fd, &mut buf, offset) {
             Ok(n) => {
                 eprintln!("Read page {}: {} bytes", page_id, n);
 
@@ -40,7 +40,7 @@ impl Disk {
             }
         };
 
-        Ok(Page::from_bytes(page_id, buf, n))
+        Ok(Page::from_bytes(page_id, buf))
     }
 
     pub fn write_page<const SIZE: usize>(&self, page: &Page<SIZE>) -> io::Result<()> {
