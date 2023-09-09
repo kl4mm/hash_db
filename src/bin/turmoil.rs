@@ -75,6 +75,12 @@ fn generate_inserts(range: Range<u16>) -> HashMap<String, String> {
 
 const DB_FILE: &str = "main.db";
 
+// FIXME:
+// 1. Replacer is not replacing - LRUK nodes are initialised as unevictable but nothing sets them to
+//    be evictible. Causes database to lock up after filling read page buffer.
+// 2. Setting LRUK nodes to be evictable by default gets rid of the locking, but there is then an
+//    issue where entries are being written into pages they wouldn't fit. This maybe cause of
+//    asserts failing in the simulation.
 fn main() -> io::Result<()> {
     let _cu = CleanUp::file(DB_FILE);
 

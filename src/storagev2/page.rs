@@ -93,7 +93,7 @@ impl<const SIZE: usize> Page<SIZE> {
         let value_len = src.get_u64();
 
         if rm + (key_len + value_len) as usize > SIZE {
-            eprintln!("log entry was written that exceeded page size");
+            eprintln!("ERROR: log entry was written that exceeded page size");
             return None;
         }
 
