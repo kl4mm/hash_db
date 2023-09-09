@@ -42,7 +42,6 @@ pub struct PageManager<
 
 impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ_SIZE> {
     pub fn new(disk: Disk, lruk: usize, latest: Page<PAGE_SIZE>) -> Self {
-        // TODO: bootstrap process could give us the write page and next_id
         let next_id = latest.id + 1;
         let disk = Arc::new(RwLock::new(disk));
         let page_table = Arc::new(RwLock::new(HashMap::from([(latest.id, PageIndex::Write)])));
@@ -88,7 +87,6 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
         Ok(())
     }
 
-    // Not used?
     pub async fn new_page<'a>(&mut self) -> Option<PageID> {
         let i = if let Some(i) = self.free.lock().await.pop() {
             i

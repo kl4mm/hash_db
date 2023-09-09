@@ -8,4 +8,5 @@ edition = "2021"
 [dependencies]
 bytes = "1.4.0"
 nix = "0.26.2"
-tokio = { version = "1.27.0", features = ["macros", "rt-multi-thread", "io-std", "fs", "io-util", "sync", "time", "net", "signal"] }
+tokio = { version = "1.32.0", features = ["macros", "rt-multi-thread", "io-std", "fs", "io-util", "sync", "time", "net", "signal"] }
+turmoil = "0.5.6"

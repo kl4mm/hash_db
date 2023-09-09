@@ -169,7 +169,7 @@ impl Into<Bytes> for Message {
             | Message::None => Bytes::new(),
 
             Message::Result(k, v) => {
-                let len = k.len() + v.len() + 3;
+                let len = k.len() + v.len() + 2;
                 let mut dst = BytesMut::zeroed(len);
 
                 crate::put_bytes!(dst, k, 0, k.len());

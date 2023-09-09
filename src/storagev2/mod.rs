@@ -5,8 +5,7 @@ pub mod page;
 pub mod page_manager;
 pub mod replacer;
 
-#[cfg(test)]
-mod test {
+pub mod test {
     pub enum Type {
         File,
         Dir,
