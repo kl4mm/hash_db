@@ -1,6 +1,5 @@
 use std::{io, os::fd::AsRawFd, path::Path};
 
-use bytes::BytesMut;
 use nix::sys::uio;
 use tokio::fs::{File, OpenOptions};
 
@@ -26,7 +25,7 @@ impl Disk {
         let offset = SIZE as i64 * i64::from(page_id);
         let fd = self.file.as_raw_fd();
 
-        let mut buf = BytesMut::zeroed(SIZE);
+        let mut buf = [0; SIZE];
         let _n = match uio::pread(fd, &mut buf, offset) {
             Ok(n) => {
                 eprintln!("Read page {}: {} bytes", page_id, n);

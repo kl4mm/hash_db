@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     io,
     sync::{
-        atomic::{AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicU32, Ordering::*},
         Arc,
     },
 };
@@ -64,7 +64,7 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
     }
 
     pub fn inc_id(&self) -> PageID {
-        self.next_id.fetch_add(1, Ordering::Relaxed)
+        self.next_id.fetch_add(1, SeqCst)
     }
 
     pub async fn replace_page(
@@ -130,6 +130,7 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
 
                     let pages = self.read.read().await;
                     let page = pages[*i].as_ref().expect("Invalid page index in table");
+                    self.unpin_page(page.id).await;
 
                     page.read_entry(kd.offset as usize)
                 }
@@ -157,6 +158,7 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
             .await
             .read_page::<PAGE_SIZE>(kd.page_id)
             .expect("Couldn't read page");
+        let page_id = page.id;
 
         let entry = page.read_entry(kd.offset as usize);
         self.page_table
@@ -164,11 +166,12 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
             .await
             .insert(page.id, PageIndex::Read(i));
         self.read.write().await[i].replace(page);
+        self.unpin_page(page_id).await;
 
         entry
     }
 
-    pub async fn unpin_page(&mut self, page_id: PageID) {
+    pub async fn unpin_page(&self, page_id: PageID) {
         let page_table = self.page_table.read().await;
         let Some(i) = page_table.get(&page_id) else { return };
 
@@ -181,7 +184,7 @@ impl<const PAGE_SIZE: usize, const READ_SIZE: usize> PageManager<PAGE_SIZE, READ
         let pages = self.read.read().await;
         let page = pages[i].as_ref().expect("Invalid page index in table");
 
-        if page.pins.fetch_sub(1, Ordering::Relaxed) == 1 {
+        if page.pins.fetch_sub(1, SeqCst) <= 1 {
             self.replacer.lock().await.set_evictable(i, true);
         }
     }

@@ -1,6 +1,6 @@
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering::*};
 
-use bytes::{Buf, BytesMut};
+use bytes::Buf;
 
 use crate::storagev2::log::Entry;
 
@@ -27,15 +27,15 @@ pub enum PageError {
 #[derive(Debug)]
 pub struct Page<const SIZE: usize> {
     pub id: PageID,
-    pub data: BytesMut,
-    pub pins: AtomicU32,
+    pub data: [u8; SIZE],
+    pub pins: AtomicI32,
     len: AtomicUsize,
 }
 
 impl<const SIZE: usize> Page<SIZE> {
     pub fn new(id: PageID) -> Self {
-        let data = BytesMut::zeroed(SIZE);
-        let pins = AtomicU32::new(0);
+        let data = [0; SIZE];
+        let pins = AtomicI32::new(0);
         let len = AtomicUsize::new(0);
 
         Self {
@@ -46,7 +46,7 @@ impl<const SIZE: usize> Page<SIZE> {
         }
     }
 
-    pub fn from_bytes(id: PageID, data: BytesMut) -> Self {
+    pub fn from_bytes(id: PageID, data: [u8; SIZE]) -> Self {
         let mut empty = 0;
         for i in (0..data.len()).rev() {
             if data[i] != b'\0' {
@@ -56,7 +56,7 @@ impl<const SIZE: usize> Page<SIZE> {
             empty += 1;
         }
 
-        let pins = AtomicU32::new(0);
+        let pins = AtomicI32::new(0);
         let len = AtomicUsize::new(SIZE - empty);
         Self {
             id,
@@ -68,7 +68,7 @@ impl<const SIZE: usize> Page<SIZE> {
 
     pub fn write_entry(&mut self, entry: &Entry) -> Result<u64, PageError> {
         let len = entry.len();
-        let offset = self.len.fetch_add(len, Ordering::Relaxed);
+        let offset = self.len.fetch_add(len, SeqCst);
         if offset + len > SIZE {
             return Err(PageError::NotEnoughSpace);
         }
@@ -80,7 +80,7 @@ impl<const SIZE: usize> Page<SIZE> {
 
     // TODO: handle invalid bounds
     pub fn read_entry(&self, offset: usize) -> Option<Entry> {
-        let mut src = BytesMut::from(&self.data[offset..]);
+        let mut src = &self.data[offset..];
 
         let rm = offset + Entry::METADATA_LEN;
         if rm >= SIZE {
@@ -92,18 +92,18 @@ impl<const SIZE: usize> Page<SIZE> {
         let key_len = src.get_u64();
         let value_len = src.get_u64();
 
-        if rm + (key_len + value_len) as usize > SIZE {
-            eprintln!("ERROR: log entry was written that exceeded page size");
-            return None;
-        }
+        // if rm + (key_len + value_len) as usize > SIZE {
+        //     eprintln!("ERROR: log entry was written that exceeded page size");
+        //     return None;
+        // }
 
         if time == 0 && key_len == 0 && value_len == 0 {
             return None;
         }
 
-        let rest = &src[0..];
-        let key = get_bytes!(rest, 0, key_len);
-        let value = get_bytes!(rest, key_len as usize, value_len);
+        // let rest = &src[0..];
+        let key = get_bytes!(&src[0..], 0, key_len);
+        let value = get_bytes!(&src[0..], key_len as usize, value_len);
 
         Some(Entry {
             t: t.into(),
@@ -114,6 +114,6 @@ impl<const SIZE: usize> Page<SIZE> {
     }
 
     pub fn pin(&self) {
-        self.pins.fetch_add(1, Ordering::Relaxed);
+        self.pins.fetch_add(1, SeqCst);
     }
 }
