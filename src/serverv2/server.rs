@@ -5,7 +5,7 @@ use crate::{
     storagev2::{
         disk::Disk,
         key_dir::{self, KeyDir},
-        page_manager::PageManager,
+        page_manager::PageCache,
     },
 };
 use tokio::{
@@ -22,7 +22,7 @@ pub async fn run() {
     let (kd, latest) = key_dir::bootstrap(&disk).await;
     let kd = Arc::new(RwLock::new(kd));
 
-    let m = PageManager::new(disk, 2, latest);
+    let m = PageCache::new(disk, 2, latest);
 
     let listener = TcpListener::bind("0.0.0.0:4444")
         .await
@@ -48,8 +48,8 @@ pub async fn run() {
     }
 }
 
-async fn accept(stream: TcpStream, addr: SocketAddr, m: PageManager, kd: Arc<RwLock<KeyDir>>) {
-    if let Err(e) = accept_loop(stream, addr, m, kd).await {
+async fn accept(stream: TcpStream, addr: SocketAddr, pc: PageCache, kd: Arc<RwLock<KeyDir>>) {
+    if let Err(e) = accept_loop(stream, addr, pc, kd).await {
         eprintln!("ERROR: {}", e);
     }
 }
@@ -57,7 +57,7 @@ async fn accept(stream: TcpStream, addr: SocketAddr, m: PageManager, kd: Arc<RwL
 async fn accept_loop(
     stream: TcpStream,
     _addr: SocketAddr,
-    m: PageManager,
+    pc: PageCache,
     kd: Arc<RwLock<KeyDir>>,
 ) -> io::Result<()> {
     let (reader, writer) = stream.into_split();
@@ -73,7 +73,7 @@ async fn accept_loop(
             None => continue,
         };
 
-        let res = message.exec(&m, &kd).await;
+        let res = message.exec(&pc, &kd).await;
 
         conn.write(res).await?;
     }

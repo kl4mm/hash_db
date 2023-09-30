@@ -54,6 +54,7 @@ impl Page {
 
     pub fn from_bytes(id: PageID, data: [u8; PAGE_SIZE]) -> Self {
         let mut empty = 0;
+        // TODO: Probably better to check 8 bytes at a time:
         for i in (0..data.len()).rev() {
             if data[i] != b'\0' {
                 break;

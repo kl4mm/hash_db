@@ -26,27 +26,61 @@ pub enum PageIndex {
 pub const DEFAULT_READ_SIZE: usize = 8;
 
 #[derive(Clone)]
-pub struct PageManager<const READ_SIZE: usize = DEFAULT_READ_SIZE> {
-    disk: Arc<RwLock<Disk>>,
-    page_table: Arc<RwLock<HashMap<PageID, PageIndex>>>, // Map page ids to index
-    current: Arc<RwLock<Page>>,
-    read: Arc<RwLock<[Option<Page>]>>,
-    free: Arc<Mutex<Vec<usize>>>,
-    next_id: Arc<AtomicU32>,
-    replacer: Arc<Mutex<LrukReplacer>>,
+pub struct PageCache(Arc<PageCacheInner>);
+
+impl PageCache {
+    pub fn new(disk: Disk, lruk: usize, latest: Page) -> Self {
+        Self(Arc::new(PageCacheInner::new(disk, lruk, latest)))
+    }
+
+    pub fn inc_id(&self) -> PageID {
+        self.0.inc_id()
+    }
+
+    pub async fn replace_page(&self, current: &mut RwLockWriteGuard<'_, Page>) -> io::Result<()> {
+        self.0.replace_page(current).await
+    }
+
+    pub async fn new_page<'a>(&mut self) -> Option<PageID> {
+        self.0.new_page().await
+    }
+
+    pub async fn fetch_entry(&self, kd: &KeyData) -> Option<Entry> {
+        self.0.fetch_entry(kd).await
+    }
+
+    pub async fn unpin_page(&self, page_id: PageID) {
+        self.0.unpin_page(page_id).await
+    }
+
+    pub async fn get_current(&self) -> RwLockWriteGuard<Page> {
+        self.0.get_current().await
+    }
+
+    pub async fn flush_current(&self) {
+        self.0.flush_current().await
+    }
 }
 
-impl<const READ_SIZE: usize> PageManager<READ_SIZE> {
+struct PageCacheInner<const READ_SIZE: usize = DEFAULT_READ_SIZE> {
+    disk: Disk,
+    page_table: RwLock<HashMap<PageID, PageIndex>>, // Map page ids to index
+    current: RwLock<Page>,
+    read: RwLock<[Option<Page>; READ_SIZE]>,
+    free: Mutex<Vec<usize>>,
+    next_id: AtomicU32,
+    replacer: Mutex<LrukReplacer>,
+}
+
+impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
     pub fn new(disk: Disk, lruk: usize, latest: Page) -> Self {
         let next_id = latest.id + 1;
-        let disk = Arc::new(RwLock::new(disk));
-        let page_table = Arc::new(RwLock::new(HashMap::from([(latest.id, PageIndex::Write)])));
-        let current = Arc::new(RwLock::new(latest));
-        let read: Arc<RwLock<[_; READ_SIZE]>> =
-            Arc::new(RwLock::new(std::array::from_fn(|_| None)));
-        let next_id = Arc::new(AtomicU32::new(next_id));
-        let free = Arc::new(Mutex::new((0..READ_SIZE).rev().collect()));
-        let replacer = Arc::new(Mutex::new(LrukReplacer::new(lruk)));
+        let page_table = RwLock::new(HashMap::from([(latest.id, PageIndex::Write)]));
+        let current = RwLock::new(latest);
+        let read: RwLock<[_; READ_SIZE]> = RwLock::new(std::array::from_fn(|_| None));
+        let next_id = AtomicU32::new(next_id);
+        let free = Mutex::new((0..READ_SIZE).rev().collect());
+        let replacer = Mutex::new(LrukReplacer::new(lruk));
 
         Self {
             disk,
@@ -64,7 +98,7 @@ impl<const READ_SIZE: usize> PageManager<READ_SIZE> {
     }
 
     pub async fn replace_page(&self, current: &mut RwLockWriteGuard<'_, Page>) -> io::Result<()> {
-        self.disk.write().await.write_page(&current)?;
+        self.disk.write_page(&current)?;
 
         let mut page_table = self.page_table.write().await;
 
@@ -80,7 +114,7 @@ impl<const READ_SIZE: usize> PageManager<READ_SIZE> {
         Ok(())
     }
 
-    pub async fn new_page<'a>(&mut self) -> Option<PageID> {
+    pub async fn new_page<'a>(&self) -> Option<PageID> {
         let i = if let Some(i) = self.free.lock().await.pop() {
             i
         } else {
@@ -93,11 +127,7 @@ impl<const READ_SIZE: usize> PageManager<READ_SIZE> {
         let page_id = self.inc_id();
         let page = Page::new(page_id);
         page.pin();
-        self.disk
-            .write()
-            .await
-            .write_page(&page)
-            .expect("Couldn't write page");
+        self.disk.write_page(&page).expect("Couldn't write page");
         self.page_table
             .write()
             .await
@@ -113,7 +143,7 @@ impl<const READ_SIZE: usize> PageManager<READ_SIZE> {
         if let Some(i) = self.page_table.read().await.get(&kd.page_id) {
             return match i {
                 PageIndex::Write => {
-                    let page = self.current.as_ref().read().await;
+                    let page = self.current.read().await;
 
                     page.read_entry(kd.offset as usize)
                 }
@@ -145,12 +175,7 @@ impl<const READ_SIZE: usize> PageManager<READ_SIZE> {
             self.page_table.write().await.remove(&kd.page_id);
         }
 
-        let page = self
-            .disk
-            .read()
-            .await
-            .read_page(kd.page_id)
-            .expect("Couldn't read page");
+        let page = self.disk.read_page(kd.page_id).expect("Couldn't read page");
         let page_id = page.id;
 
         let entry = page.read_entry(kd.offset as usize);
@@ -186,13 +211,9 @@ impl<const READ_SIZE: usize> PageManager<READ_SIZE> {
         self.current.write().await
     }
 
-    pub async fn flush_current(&mut self) {
+    pub async fn flush_current(&self) {
         let current = self.current.write().await;
-        self.disk
-            .write()
-            .await
-            .write_page(&current)
-            .expect("Couldn't write page");
+        self.disk.write_page(&current).expect("Couldn't write page");
     }
 }
 
@@ -205,7 +226,7 @@ mod test {
         key_dir::KeyData,
         log::{Entry, EntryType},
         page::Page,
-        page_manager::{PageManager, DEFAULT_READ_SIZE},
+        page_manager::{PageCacheInner, DEFAULT_READ_SIZE},
         test::CleanUp,
     };
 
@@ -215,7 +236,7 @@ mod test {
         let _cu = CleanUp::file(DB_FILE);
         let disk = Disk::new(DB_FILE).await?;
 
-        let m = PageManager::<DEFAULT_READ_SIZE>::new(disk, 2, Page::new(0));
+        let m = PageCacheInner::<DEFAULT_READ_SIZE>::new(disk, 2, Page::new(0));
 
         let mut page_w = m.get_current().await;
 
@@ -268,7 +289,7 @@ mod test {
         let _cu = CleanUp::file(DB_FILE);
         let disk = Disk::new(DB_FILE).await?;
 
-        let mut m = PageManager::<3>::new(disk, 2, Page::new(0));
+        let mut m = PageCacheInner::<3>::new(disk, 2, Page::new(0));
 
         let _ = m.new_page().await.expect("should have space for page 1"); // ts = 0
         let _ = m.new_page().await.expect("should have space for page 2"); // ts = 1

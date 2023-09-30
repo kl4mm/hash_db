@@ -7,7 +7,7 @@ use crate::storagev2::{
     key_dir::{KeyData, KeyDir},
     log::{Entry, EntryType},
     page::PageError,
-    page_manager::PageManager,
+    page_manager::PageCache,
 };
 
 #[derive(Debug, PartialEq)]
@@ -24,7 +24,7 @@ pub enum Message {
 }
 
 impl Message {
-    pub async fn exec(&self, m: &PageManager, kd: &Arc<RwLock<KeyDir>>) -> Message {
+    pub async fn exec(&self, m: &PageCache, kd: &Arc<RwLock<KeyDir>>) -> Message {
         match self {
             Message::Insert(k, v) => {
                 let mut current = m.get_current().await;
