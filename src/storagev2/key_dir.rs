@@ -5,7 +5,7 @@ use bytes::BytesMut;
 use crate::storagev2::{
     disk::Disk,
     log::EntryType,
-    page::{Page, PageID},
+    page::{Page, PageID, PAGE_SIZE},
 };
 
 #[derive(Debug, PartialEq)]
@@ -43,16 +43,14 @@ impl KeyDir {
     }
 }
 
-pub async fn bootstrap<const PAGE_SIZE: usize>(disk: &Disk) -> (KeyDir, Page<PAGE_SIZE>) {
+pub async fn bootstrap(disk: &Disk) -> (KeyDir, Page) {
     let len = disk.len().await;
     let pages = len / PAGE_SIZE;
 
     let mut page = Page::new(0);
     let mut inner = HashMap::new();
     for page_id in 0..pages as u32 {
-        page = disk
-            .read_page::<PAGE_SIZE>(page_id)
-            .expect("should read page");
+        page = disk.read_page(page_id).expect("should read page");
 
         let mut offset = 0;
         while let Some(entry) = page.read_entry(offset) {
@@ -108,14 +106,13 @@ mod test {
             Entry::new(b"key5", b"latest", EntryType::Put),
         ];
 
-        const PAGE_SIZE: usize = 256;
         let mut current_id = 0;
-        let mut current = Page::<PAGE_SIZE>::new(current_id);
+        let mut current = Page::new(current_id);
         for e in entries {
             if let Err(_) = current.write_entry(&e) {
                 disk.write_page(&current).expect("failed to write page");
                 current_id += 1;
-                current = Page::<PAGE_SIZE>::new(current_id);
+                current = Page::new(current_id);
                 current
                     .write_entry(&e)
                     .expect("new current should have space");
@@ -123,7 +120,7 @@ mod test {
         }
         disk.write_page(&current).expect("failed to write page");
 
-        let (key_dir, _) = bootstrap::<PAGE_SIZE>(&disk).await;
+        let (key_dir, _) = bootstrap(&disk).await;
 
         let expected = KeyDir {
             inner: HashMap::from([
@@ -160,7 +157,7 @@ mod test {
 
         assert!(
             key_dir == expected,
-            "\nExpected: {:?}\nGot: {:?}\n",
+            "\nExpected: {:?}\n     Got: {:?}\n",
             expected,
             key_dir,
         );

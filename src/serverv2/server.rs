@@ -5,7 +5,7 @@ use crate::{
     storagev2::{
         disk::Disk,
         key_dir::{self, KeyDir},
-        page_manager::{PageManager, DEFAULT_PAGE_SIZE},
+        page_manager::PageManager,
     },
 };
 use tokio::{
@@ -19,7 +19,7 @@ const DB_FILE: &str = "main.db";
 
 pub async fn run() {
     let disk = Disk::new(DB_FILE).await.expect("Failed to open db file");
-    let (kd, latest) = key_dir::bootstrap::<DEFAULT_PAGE_SIZE>(&disk).await;
+    let (kd, latest) = key_dir::bootstrap(&disk).await;
     let kd = Arc::new(RwLock::new(kd));
 
     let m = PageManager::new(disk, 2, latest);
