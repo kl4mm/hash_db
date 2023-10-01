@@ -7,14 +7,14 @@ use std::{
     },
 };
 
-use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
+use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::storagev2::{
     disk::Disk,
     key_dir::KeyData,
     log::Entry,
     page::{Page, PageID, PageInner},
-    replacer::LrukReplacer,
+    replacer::LRUKHandle,
 };
 
 #[derive(Debug)]
@@ -24,6 +24,34 @@ pub enum PageIndex {
 }
 
 pub const DEFAULT_READ_SIZE: usize = 8;
+
+pub struct Pin<'a> {
+    pub page: &'a Page,
+    i: usize,
+    replacer: LRUKHandle,
+}
+
+impl Drop for Pin<'_> {
+    fn drop(&mut self) {
+        tokio::task::block_in_place(|| {
+            self.replacer.blocking_unpin(self.i);
+        });
+    }
+}
+
+impl<'a> Pin<'a> {
+    pub fn new(page: &'a Page, i: usize, replacer: LRUKHandle) -> Self {
+        Self { page, i, replacer }
+    }
+
+    pub async fn write(&self) -> RwLockWriteGuard<'_, PageInner> {
+        self.page.write().await
+    }
+
+    pub async fn read(&self) -> RwLockReadGuard<'_, PageInner> {
+        self.page.read().await
+    }
+}
 
 #[derive(Clone)]
 pub struct PageCache(Arc<PageCacheInner>);
@@ -52,10 +80,6 @@ impl PageCache {
         self.0.fetch_entry(kd).await
     }
 
-    pub async fn unpin_page(&self, page_id: PageID) {
-        self.0.unpin_page(page_id).await
-    }
-
     pub async fn get_current(&self) -> RwLockWriteGuard<'_, PageInner> {
         self.0.get_current().await
     }
@@ -72,7 +96,7 @@ struct PageCacheInner<const READ_SIZE: usize = DEFAULT_READ_SIZE> {
     read: [Page; READ_SIZE],
     free: Mutex<Vec<usize>>,
     next_id: AtomicU32,
-    replacer: Mutex<LrukReplacer>,
+    replacer: LRUKHandle,
 }
 
 impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
@@ -83,7 +107,7 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
         let read: [_; READ_SIZE] = std::array::from_fn(|_| Page::default());
         let next_id = AtomicU32::new(next_id);
         let free = Mutex::new((0..READ_SIZE).rev().collect());
-        let replacer = Mutex::new(LrukReplacer::new(lruk));
+        let replacer = LRUKHandle::new(lruk);
 
         Self {
             disk,
@@ -122,21 +146,20 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
     }
 
     pub async fn new_page<'a>(&self) -> Option<PageID> {
-        let i = if let Some(i) = self.free.lock().await.pop() {
-            i
-        } else {
-            let Some(i) = self.replacer.lock().await.evict() else { return None };
-
-            i
+        let i = match self.free.lock().await.pop() {
+            Some(i) => i,
+            None => self.replacer.evict().await?,
         };
-        self.replacer.lock().await.record_access(i);
+        self.replacer.remove(i).await;
+        self.replacer.record_access(i).await;
+        self.replacer.pin(i).await;
 
         let page_id = self.inc_id();
 
-        let mut page = self.read[i].write().await;
+        let pin = Pin::new(&self.read[i], i, self.replacer.clone());
+        let mut page = pin.write().await;
         page.reset();
         page.id = page_id;
-        page.pins += 1;
 
         self.disk.write_page(page.id, &page.data);
         self.page_table
@@ -157,32 +180,31 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
                 }
                 PageIndex::Read(i) => {
                     assert!(*i < READ_SIZE);
-                    self.replacer.lock().await.record_access(*i);
+                    self.replacer.record_access(*i).await;
+                    self.replacer.pin(*i).await;
 
-                    let page = self.read[*i].read().await;
-                    // self.unpin_page(page.id).await; // LOCKS
+                    let pin = Pin::new(&self.read[*i], *i, self.replacer.clone());
+                    let page = pin.read().await;
 
                     page.read_entry(kd.offset as usize)
                 }
             };
         };
 
-        let i = if let Some(i) = self.free.lock().await.pop() {
-            i
-        } else {
-            // TODO: Should return an error here
-            let mut replacer = self.replacer.lock().await;
-            let Some(i) = replacer.evict() else { return None };
-            replacer.record_access(i);
-
-            i
+        let i = match self.free.lock().await.pop() {
+            Some(i) => i,
+            None => self.replacer.evict().await?,
         };
+        self.replacer.remove(i).await;
+        self.replacer.record_access(i).await;
+        self.replacer.pin(i).await;
 
         assert!(i < READ_SIZE);
 
         // Replace page
         let page_data = self.disk.read_page(kd.page_id).expect("Couldn't read page");
-        let mut page = self.read[i].write().await;
+        let pin = Pin::new(&self.read[i], i, self.replacer.clone());
+        let mut page = pin.write().await;
         page.reset();
         page.id = kd.page_id;
         page.data = page_data;
@@ -192,28 +214,8 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
             .write()
             .await
             .insert(page.id, PageIndex::Read(i));
-        // self.read.write().await[i].replace(page);
-        self.unpin_page(page.id).await;
 
         entry
-    }
-
-    pub async fn unpin_page(&self, page_id: PageID) {
-        let page_table = self.page_table.read().await;
-        let Some(i) = page_table.get(&page_id) else { return };
-
-        let i = match i {
-            PageIndex::Read(i) => *i,
-            _ => unreachable!("Can't unpin write page"),
-        };
-        drop(page_table);
-
-        let mut page = self.read[i].write().await;
-
-        page.pins -= 1;
-        if page.pins == 0 {
-            self.replacer.lock().await.set_evictable(i, true);
-        }
     }
 
     pub async fn get_current(&self) -> RwLockWriteGuard<'_, PageInner> {
@@ -292,55 +294,43 @@ mod test {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_replacer() -> io::Result<()> {
         const DB_FILE: &str = "./test_replacer.db";
         let _cu = CleanUp::file(DB_FILE);
         let disk = Disk::new(DB_FILE).await?;
 
-        let mut m = PageCacheInner::<3>::new(disk, 2, Page::new(0), 0);
+        let m = PageCacheInner::<3>::new(disk, 2, Page::new(0), 0);
 
-        let _ = m.new_page().await.expect("should have space for page 1"); // ts = 0
-        let _ = m.new_page().await.expect("should have space for page 2"); // ts = 1
-        let _ = m.new_page().await.expect("should have space for page 3"); // ts = 2
+        {
+            let _ = m.new_page().await.expect("should have space for page 1"); // ts = 0
+            let _ = m.new_page().await.expect("should have space for page 2"); // ts = 1
+            let _ = m.new_page().await.expect("should have space for page 3"); // ts = 2
 
-        let kd1 = KeyData {
-            page_id: 1,
-            offset: 0,
-        };
-        let kd2 = KeyData {
-            page_id: 2,
-            offset: 0,
-        };
-        let kd3 = KeyData {
-            page_id: 3,
-            offset: 0,
-        };
+            let kd1 = KeyData {
+                page_id: 1,
+                offset: 0,
+            };
+            let kd2 = KeyData {
+                page_id: 2,
+                offset: 0,
+            };
+            let kd3 = KeyData {
+                page_id: 3,
+                offset: 0,
+            };
 
-        m.fetch_entry(&kd1).await; // ts = 3
-        m.fetch_entry(&kd2).await; // ts = 4
-        m.fetch_entry(&kd1).await; // ts = 5
+            m.fetch_entry(&kd1).await; // ts = 3
+            m.fetch_entry(&kd2).await; // ts = 4
+            m.fetch_entry(&kd1).await; // ts = 5
 
-        m.fetch_entry(&kd1).await; // ts = 6
-        m.fetch_entry(&kd2).await; // ts = 7
-        m.fetch_entry(&kd1).await; // ts = 8
-        m.fetch_entry(&kd2).await; // ts = 9
+            m.fetch_entry(&kd1).await; // ts = 6
+            m.fetch_entry(&kd2).await; // ts = 7
+            m.fetch_entry(&kd1).await; // ts = 8
+            m.fetch_entry(&kd2).await; // ts = 9
 
-        m.fetch_entry(&kd3).await; // ts = 10 - Least accessed, should get evicted
-
-        m.unpin_page(1).await;
-        m.unpin_page(1).await;
-        m.unpin_page(1).await;
-        m.unpin_page(1).await;
-        m.unpin_page(1).await;
-
-        m.unpin_page(2).await;
-        m.unpin_page(2).await;
-        m.unpin_page(2).await;
-        m.unpin_page(2).await;
-
-        m.unpin_page(3).await;
-        m.unpin_page(3).await;
+            m.fetch_entry(&kd3).await; // ts = 10 - Least accessed, should get evicted
+        }
 
         let new_page_id = m.new_page().await.expect("a page should have been evicted");
         assert!(new_page_id == 4, "Got: {}", new_page_id);

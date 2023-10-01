@@ -55,7 +55,6 @@ impl Default for Page {
 pub struct PageInner {
     pub id: PageID,
     pub data: [u8; PAGE_SIZE],
-    pub pins: u32,
     len: usize,
 }
 
@@ -64,7 +63,6 @@ impl Default for PageInner {
         Self {
             id: 0,
             data: [0; PAGE_SIZE],
-            pins: 0,
             len: 0,
         }
     }
@@ -76,12 +74,7 @@ impl PageInner {
         let pins = 0;
         let len = 0;
 
-        Self {
-            id,
-            data,
-            pins,
-            len,
-        }
+        Self { id, data, len }
     }
 
     pub fn from_bytes(id: PageID, data: [u8; PAGE_SIZE]) -> Self {
@@ -97,12 +90,7 @@ impl PageInner {
 
         let pins = 0;
         let len = PAGE_SIZE - empty;
-        Self {
-            id,
-            data,
-            pins,
-            len,
-        }
+        Self { id, data, len }
     }
 
     pub fn write_entry(&mut self, entry: &Entry) -> Result<u64, PageError> {
@@ -154,13 +142,7 @@ impl PageInner {
         })
     }
 
-    pub fn pin(&mut self) {
-        self.pins += 1;
-    }
-
     pub fn reset(&mut self) {
-        assert!(self.pins == 0);
-
         self.data = [0; PAGE_SIZE];
         self.len = 0;
     }

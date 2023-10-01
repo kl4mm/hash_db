@@ -1,30 +1,44 @@
 use std::collections::{hash_map::Entry, HashMap};
 
-struct Lruk {
-    buf_i: usize,
+use tokio::sync::{mpsc, oneshot};
+
+#[derive(Debug)]
+struct LRUKNode {
+    i: usize,
     history: Vec<u64>,
-    is_evictable: bool,
+    pin: u64,
 }
 
-impl Lruk {
-    pub fn new(buf_i: usize, ts: u64) -> Self {
+impl LRUKNode {
+    pub fn new(i: usize, ts: u64) -> Self {
         Self {
-            buf_i,
+            i,
             history: vec![ts],
-            is_evictable: false,
+            pin: 0,
         }
+    }
+
+    pub fn get_k_distance(&self, k: usize) -> Option<u64> {
+        let len = self.history.len();
+        if len < k {
+            return None;
+        }
+
+        let latest = self.history.last().unwrap();
+        let kth = len - k;
+
+        Some(latest - self.history[kth])
     }
 }
 
-#[derive(Default)]
-pub struct LrukReplacer {
-    /// Maps index inside buffer pool to LRUK node
-    nodes: HashMap<usize, Lruk>,
+#[derive(Default, Debug)]
+struct LRUKReplacer {
+    nodes: HashMap<usize, LRUKNode>,
     current_ts: u64,
     k: usize,
 }
 
-impl LrukReplacer {
+impl LRUKReplacer {
     pub fn new(k: usize) -> Self {
         Self {
             k,
@@ -34,23 +48,17 @@ impl LrukReplacer {
 
     pub fn evict(&mut self) -> Option<usize> {
         let mut max: (usize, u64) = (0, 0);
-        let mut single_access: Vec<&Lruk> = Vec::new();
+        let mut single_access: Vec<&LRUKNode> = Vec::new();
         for (id, node) in &self.nodes {
-            if !node.is_evictable {
+            if node.pin != 0 {
                 continue;
             }
 
-            let len = node.history.len();
-            if len < self.k {
-                single_access.push(node);
-                continue;
-            }
-
-            let kth = len - self.k;
-            let distance = node.history[len - 1] - node.history[kth];
-            if distance > max.1 {
-                max = (*id, distance);
-            }
+            match node.get_k_distance(self.k) {
+                Some(d) if d > max.1 => max = (*id, d),
+                None => single_access.push(node),
+                _ => {}
+            };
         }
 
         if max.1 != 0 {
@@ -61,50 +69,154 @@ impl LrukReplacer {
             return None;
         }
 
-        // If multiple frames have less than two recorded accesses, choose the one with the
+        // If multiple frames have less than k recorded accesses, choose the one with the
         // earliest timestamp to evict
         let mut earliest: (usize, u64) = (0, u64::MAX);
         for node in &single_access {
-            let ts = node.history[0];
-            if ts < earliest.1 {
-                earliest = (node.buf_i, ts);
+            match node.history.last() {
+                Some(ts) if *ts < earliest.1 => earliest = (node.i, *ts),
+                None => todo!(),
+                _ => {}
             }
         }
 
         Some(earliest.0)
     }
 
-    pub fn record_access(&mut self, buf_i: usize) {
-        match self.nodes.entry(buf_i) {
+    pub fn record_access(&mut self, i: usize) {
+        match self.nodes.entry(i) {
             Entry::Occupied(mut node) => {
                 node.get_mut().history.push(self.current_ts);
                 self.current_ts += 1;
             }
             Entry::Vacant(entry) => {
-                entry.insert(Lruk::new(buf_i, self.current_ts));
+                entry.insert(LRUKNode::new(i, self.current_ts));
                 self.current_ts += 1;
             }
         }
     }
 
-    pub fn set_evictable(&mut self, buf_i: usize, evictable: bool) {
-        if let Some(node) = self.nodes.get_mut(&buf_i) {
-            node.is_evictable = evictable;
+    pub fn pin(&mut self, i: usize) {
+        if let Some(node) = self.nodes.get_mut(&i) {
+            node.pin += 1;
         }
     }
 
-    pub fn remove(&mut self, buf_i: usize) {
-        match self.nodes.entry(buf_i) {
+    pub fn unpin(&mut self, i: usize) {
+        if let Some(node) = self.nodes.get_mut(&i) {
+            node.pin -= 1;
+        }
+    }
+
+    pub fn remove(&mut self, i: usize) {
+        match self.nodes.entry(i) {
             Entry::Occupied(node) => {
-                assert!(node.get().is_evictable);
+                assert!(node.get().pin == 0);
                 node.remove();
             }
             Entry::Vacant(_) => {
                 eprintln!(
-                    "ERROR: Attempt to remove frame that has not been registered in the replacer \
-                    {buf_i}"
+                    "warn: attempt to remove frame that has not been registered in the replacer: \
+                    {i}"
                 );
             }
+        }
+    }
+}
+
+pub enum LRUKMessage {
+    Evict {
+        reply: oneshot::Sender<Option<usize>>,
+    },
+    RecordAccess(usize),
+    Pin(usize),
+    Unpin(usize),
+    Remove(usize),
+}
+
+pub struct LRUKActor {
+    inner: LRUKReplacer,
+    rx: mpsc::Receiver<LRUKMessage>,
+}
+
+impl LRUKActor {
+    pub fn new(k: usize, rx: mpsc::Receiver<LRUKMessage>) -> Self {
+        let inner = LRUKReplacer::new(k);
+
+        Self { inner, rx }
+    }
+
+    pub async fn run(&mut self) {
+        while let Some(m) = self.rx.recv().await {
+            match m {
+                LRUKMessage::Evict { reply } => {
+                    let ret = self.inner.evict();
+
+                    if reply.send(ret).is_err() {
+                        eprintln!("replacer channel error: could not reply to evict message");
+                    }
+                }
+                LRUKMessage::RecordAccess(i) => self.inner.record_access(i),
+                LRUKMessage::Pin(i) => self.inner.pin(i),
+                LRUKMessage::Unpin(i) => self.inner.unpin(i),
+                LRUKMessage::Remove(i) => self.inner.remove(i),
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct LRUKHandle {
+    tx: mpsc::Sender<LRUKMessage>,
+}
+
+impl LRUKHandle {
+    pub fn new(k: usize) -> Self {
+        let (tx, rx) = mpsc::channel(256);
+
+        let mut replacer = LRUKActor::new(k, rx);
+        let _jh = tokio::spawn(async move { replacer.run().await });
+
+        Self { tx }
+    }
+
+    pub async fn evict(&self) -> Option<usize> {
+        let (tx, rx) = oneshot::channel();
+
+        if let Err(e) = self.tx.send(LRUKMessage::Evict { reply: tx }).await {
+            eprintln!("replacer channel error: {e}");
+        }
+
+        rx.await.expect("replacer has been killed")
+    }
+
+    pub async fn record_access(&self, i: usize) {
+        if let Err(e) = self.tx.send(LRUKMessage::RecordAccess(i)).await {
+            eprintln!("replacer channel error: {e}");
+        }
+    }
+
+    pub async fn pin(&self, i: usize) {
+        if let Err(e) = self.tx.send(LRUKMessage::Pin(i)).await {
+            eprintln!("replacer channel error: {e}");
+        }
+    }
+
+    pub async fn unpin(&self, i: usize) {
+        if let Err(e) = self.tx.send(LRUKMessage::Unpin(i)).await {
+            eprintln!("replacer channel error: {e}");
+        }
+    }
+
+    pub fn blocking_unpin(&self, i: usize) {
+        if let Err(e) = self.tx.blocking_send(LRUKMessage::Unpin(i)) {
+            eprintln!("replacer channel error: {e}");
+        }
+    }
+
+    pub async fn remove(&self, i: usize) {
+        if let Err(e) = self.tx.send(LRUKMessage::Remove(i)).await {
+            eprintln!("replacer channel error: {e}");
         }
     }
 }
