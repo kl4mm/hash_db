@@ -1,9 +1,10 @@
-use std::{collections::HashMap, io, ops::Range, time::Duration};
+use std::{collections::HashMap, io, ops::Range, sync::Arc, time::Duration};
 
 use hash_db::storagev2::test::CleanUp;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::ToSocketAddrs,
+    sync::Notify,
 };
 
 fn generate_inserts(range: Range<u16>) -> HashMap<String, String> {
@@ -75,35 +76,42 @@ impl<T: ToSocketAddrs> Client<T> {
 pub async fn main() -> io::Result<()> {
     let _cu = CleanUp::file(DB_FILE);
 
-    // TODO: add timeout
-    let sh = tokio::spawn(async {
-        hash_db::serverv2::server::run().await;
-    });
+    let notify = Arc::new(Notify::new());
 
+    let sh_notify = notify.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = hash_db::serverv2::server::run() => {}
+            _ = sh_notify.notified() => {
+                eprintln!("shutting down server");
+            }
+        }
+    });
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    let ch0 = tokio::spawn(async {
+    tokio::spawn(async {
         let c = Client::new(0, "0.0.0.0:4444", 0..1000);
         if let Err(e) = c.run().await {
             eprintln!("{} failed with error: {}", c.id, e);
         }
     });
 
-    let ch1 = tokio::spawn(async {
+    tokio::spawn(async {
         let c = Client::new(1, "0.0.0.0:4444", 1000..2000);
         if let Err(e) = c.run().await {
             eprintln!("{} failed with error: {}", c.id, e);
         }
     });
 
-    let ch2 = tokio::spawn(async {
+    tokio::spawn(async {
         let c = Client::new(2, "0.0.0.0:4444", 3000..4000);
         if let Err(e) = c.run().await {
             eprintln!("{} failed with error: {}", c.id, e);
         }
     });
 
-    let _ = tokio::join!(sh, ch0, ch1, ch2);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    notify.notify_one();
 
     eprintln!("FINISH");
 
