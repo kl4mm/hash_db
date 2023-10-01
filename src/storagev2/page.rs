@@ -71,7 +71,6 @@ impl Default for PageInner {
 impl PageInner {
     pub fn new(id: PageID) -> Self {
         let data = [0; PAGE_SIZE];
-        let pins = 0;
         let len = 0;
 
         Self { id, data, len }
@@ -79,16 +78,14 @@ impl PageInner {
 
     pub fn from_bytes(id: PageID, data: [u8; PAGE_SIZE]) -> Self {
         let mut empty = 0;
-        // TODO: Probably better to check 8 bytes at a time:
-        for i in (0..data.len()).rev() {
-            if data[i] != b'\0' {
-                break;
-            }
 
-            empty += 1;
+        const WINDOW: usize = 8;
+        for w in data.windows(WINDOW).rev() {
+            if u64::from_be_bytes(w.try_into().unwrap()) == 0 {
+                empty += WINDOW;
+            }
         }
 
-        let pins = 0;
         let len = PAGE_SIZE - empty;
         Self { id, data, len }
     }
