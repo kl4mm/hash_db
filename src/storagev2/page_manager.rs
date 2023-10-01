@@ -11,13 +11,11 @@ use tokio::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::storagev2::{
     disk::Disk,
-    key_dir::KeyData,
-    log::Entry,
     page::{Page, PageID, PageInner},
     replacer::LRUKHandle,
 };
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum PageIndex {
     Write,
     Read(usize),
@@ -27,20 +25,23 @@ pub const DEFAULT_READ_SIZE: usize = 8;
 
 pub struct Pin<'a> {
     pub page: &'a Page,
-    i: usize,
+    i: PageIndex,
     replacer: LRUKHandle,
 }
 
 impl Drop for Pin<'_> {
     fn drop(&mut self) {
-        tokio::task::block_in_place(|| {
-            self.replacer.blocking_unpin(self.i);
+        tokio::task::block_in_place(|| match self.i {
+            PageIndex::Write => {}
+            PageIndex::Read(i) => {
+                self.replacer.blocking_unpin(i);
+            }
         });
     }
 }
 
 impl<'a> Pin<'a> {
-    pub fn new(page: &'a Page, i: usize, replacer: LRUKHandle) -> Self {
+    pub fn new(page: &'a Page, i: PageIndex, replacer: LRUKHandle) -> Self {
         Self { page, i, replacer }
     }
 
@@ -77,8 +78,8 @@ impl PageCache {
         self.0.new_page().await
     }
 
-    pub async fn fetch_entry(&self, kd: &KeyData) -> Option<Entry> {
-        self.0.fetch_entry(kd).await
+    pub async fn fetch_page(&self, page_id: PageID) -> Option<Pin<'_>> {
+        self.0.fetch_page(page_id).await
     }
 
     pub async fn get_current(&self) -> RwLockWriteGuard<'_, PageInner> {
@@ -158,7 +159,7 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
 
         let page_id = self.inc_id();
 
-        let pin = Pin::new(&self.read[i], i, self.replacer.clone());
+        let pin = Pin::new(&self.read[i], PageIndex::Read(i), self.replacer.clone());
         let mut page = pin.write().await;
         page.reset();
         page.id = page_id;
@@ -172,23 +173,24 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
         Some(page_id)
     }
 
-    pub async fn fetch_entry(&self, kd: &KeyData) -> Option<Entry> {
-        if let Some(i) = self.page_table.read().await.get(&kd.page_id) {
+    pub async fn fetch_page(&self, page_id: PageID) -> Option<Pin<'_>> {
+        if let Some(i) = self.page_table.read().await.get(&page_id) {
             return match i {
-                PageIndex::Write => {
-                    let page = self.current.read().await;
-
-                    page.read_entry(kd.offset as usize)
-                }
+                PageIndex::Write => Some(Pin::new(
+                    &self.current,
+                    PageIndex::Write,
+                    self.replacer.clone(),
+                )),
                 PageIndex::Read(i) => {
                     assert!(*i < READ_SIZE);
                     self.replacer.record_access(*i).await;
                     self.replacer.pin(*i).await;
 
-                    let pin = Pin::new(&self.read[*i], *i, self.replacer.clone());
-                    let page = pin.read().await;
-
-                    page.read_entry(kd.offset as usize)
+                    Some(Pin::new(
+                        &self.read[*i],
+                        PageIndex::Read(*i),
+                        self.replacer.clone(),
+                    ))
                 }
             };
         };
@@ -204,20 +206,22 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
         assert!(i < READ_SIZE);
 
         // Replace page
-        let page_data = self.disk.read_page(kd.page_id).expect("Couldn't read page");
-        let pin = Pin::new(&self.read[i], i, self.replacer.clone());
-        let mut page = pin.write().await;
+        let page_data = self.disk.read_page(page_id).expect("Couldn't read page");
+        let mut page = self.read[i].write().await;
         page.reset();
-        page.id = kd.page_id;
+        page.id = page_id;
         page.data = page_data;
 
-        let entry = page.read_entry(kd.offset as usize);
         self.page_table
             .write()
             .await
             .insert(page.id, PageIndex::Read(i));
 
-        entry
+        Some(Pin::new(
+            &self.read[i],
+            PageIndex::Read(i),
+            self.replacer.clone(),
+        ))
     }
 
     pub async fn get_current(&self) -> RwLockWriteGuard<'_, PageInner> {
@@ -243,7 +247,7 @@ mod test {
         test::CleanUp,
     };
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_page_manager() -> io::Result<()> {
         const DB_FILE: &str = "./test_page_manager.db";
         let _cu = CleanUp::file(DB_FILE);
@@ -270,15 +274,17 @@ mod test {
             page_id: 0,
             offset: entry_a.len() as u64,
         };
-        let got_a = m
-            .fetch_entry(&kda)
+        let page_a = m
+            .fetch_page(kda.page_id)
             .await
             .expect("should fetch current page");
+        let got_a = page_a.read().await.read_entry(kda.offset as usize).unwrap();
 
-        let got_b = m
-            .fetch_entry(&kdb)
+        let page_b = m
+            .fetch_page(kdb.page_id)
             .await
             .expect("should fetch current page");
+        let got_b = page_b.read().await.read_entry(kdb.offset as usize).unwrap();
 
         assert!(
             entry_a == got_a,
@@ -322,16 +328,16 @@ mod test {
                 offset: 0,
             };
 
-            m.fetch_entry(&kd1).await; // ts = 3
-            m.fetch_entry(&kd2).await; // ts = 4
-            m.fetch_entry(&kd1).await; // ts = 5
+            m.fetch_page(kd1.page_id).await; // ts = 3
+            m.fetch_page(kd2.page_id).await; // ts = 4
+            m.fetch_page(kd1.page_id).await; // ts = 5
 
-            m.fetch_entry(&kd1).await; // ts = 6
-            m.fetch_entry(&kd2).await; // ts = 7
-            m.fetch_entry(&kd1).await; // ts = 8
-            m.fetch_entry(&kd2).await; // ts = 9
+            m.fetch_page(kd1.page_id).await; // ts = 6
+            m.fetch_page(kd2.page_id).await; // ts = 7
+            m.fetch_page(kd1.page_id).await; // ts = 8
+            m.fetch_page(kd2.page_id).await; // ts = 9
 
-            m.fetch_entry(&kd3).await; // ts = 10 - Least accessed, should get evicted
+            m.fetch_page(kd3.page_id).await; // ts = 10 - Least accessed, should get evicted
         }
 
         let new_page_id = m.new_page().await.expect("a page should have been evicted");

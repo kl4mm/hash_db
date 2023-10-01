@@ -73,7 +73,10 @@ impl Message {
                 let Some(data) = kd.get(k) else { return Message::None };
 
                 // TODO: return error if replacer couldn't replace
-                let Some(entry) = m.fetch_entry(data).await else { return Message::None };
+                let Some(page) = m.fetch_page(data.page_id).await else { return Message::None };
+                let page_w = page.read().await;
+                // TODO: return error page could not have held entry
+                let Some(entry) = page_w.read_entry(data.offset as usize) else { return Message::None };
 
                 Message::Result(entry.key.into(), entry.value.into())
             }
