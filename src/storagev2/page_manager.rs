@@ -31,12 +31,11 @@ pub struct Pin<'a> {
 
 impl Drop for Pin<'_> {
     fn drop(&mut self) {
-        tokio::task::block_in_place(|| match self.i {
-            PageIndex::Write => {}
-            PageIndex::Read(i) => {
+        if let PageIndex::Read(i) = self.i {
+            tokio::task::block_in_place(|| {
                 self.replacer.blocking_unpin(i);
-            }
-        });
+            });
+        };
     }
 }
 
