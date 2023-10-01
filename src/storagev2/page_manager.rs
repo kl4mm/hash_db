@@ -13,7 +13,7 @@ use crate::storagev2::{
     disk::Disk,
     key_dir::KeyData,
     log::Entry,
-    page::{Page, PageID},
+    page::{Page, PageID, PageInner},
     replacer::LrukReplacer,
 };
 
@@ -29,15 +29,18 @@ pub const DEFAULT_READ_SIZE: usize = 8;
 pub struct PageCache(Arc<PageCacheInner>);
 
 impl PageCache {
-    pub fn new(disk: Disk, lruk: usize, latest: Page) -> Self {
-        Self(Arc::new(PageCacheInner::new(disk, lruk, latest)))
+    pub fn new(disk: Disk, lruk: usize, latest: Page, latest_id: PageID) -> Self {
+        Self(Arc::new(PageCacheInner::new(disk, lruk, latest, latest_id)))
     }
 
     pub fn inc_id(&self) -> PageID {
         self.0.inc_id()
     }
 
-    pub async fn replace_page(&self, current: &mut RwLockWriteGuard<'_, Page>) -> io::Result<()> {
+    pub async fn replace_page(
+        &self,
+        current: &mut RwLockWriteGuard<'_, PageInner>,
+    ) -> io::Result<()> {
         self.0.replace_page(current).await
     }
 
@@ -53,7 +56,7 @@ impl PageCache {
         self.0.unpin_page(page_id).await
     }
 
-    pub async fn get_current(&self) -> RwLockWriteGuard<Page> {
+    pub async fn get_current(&self) -> RwLockWriteGuard<'_, PageInner> {
         self.0.get_current().await
     }
 
@@ -64,20 +67,20 @@ impl PageCache {
 
 struct PageCacheInner<const READ_SIZE: usize = DEFAULT_READ_SIZE> {
     disk: Disk,
-    page_table: RwLock<HashMap<PageID, PageIndex>>, // Map page ids to index
-    current: RwLock<Page>,
-    read: RwLock<[Option<Page>; READ_SIZE]>,
+    page_table: RwLock<HashMap<PageID, PageIndex>>,
+    current: Page,
+    read: [Page; READ_SIZE],
     free: Mutex<Vec<usize>>,
     next_id: AtomicU32,
     replacer: Mutex<LrukReplacer>,
 }
 
 impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
-    pub fn new(disk: Disk, lruk: usize, latest: Page) -> Self {
-        let next_id = latest.id + 1;
-        let page_table = RwLock::new(HashMap::from([(latest.id, PageIndex::Write)]));
-        let current = RwLock::new(latest);
-        let read: RwLock<[_; READ_SIZE]> = RwLock::new(std::array::from_fn(|_| None));
+    pub fn new(disk: Disk, lruk: usize, latest: Page, latest_id: PageID) -> Self {
+        let next_id = latest_id + 1;
+        let page_table = RwLock::new(HashMap::from([(latest_id, PageIndex::Write)]));
+        let current = latest;
+        let read: [_; READ_SIZE] = std::array::from_fn(|_| Page::default());
         let next_id = AtomicU32::new(next_id);
         let free = Mutex::new((0..READ_SIZE).rev().collect());
         let replacer = Mutex::new(LrukReplacer::new(lruk));
@@ -97,8 +100,11 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
         self.next_id.fetch_add(1, SeqCst)
     }
 
-    pub async fn replace_page(&self, current: &mut RwLockWriteGuard<'_, Page>) -> io::Result<()> {
-        self.disk.write_page(&current)?;
+    pub async fn replace_page(
+        &self,
+        current: &mut RwLockWriteGuard<'_, PageInner>,
+    ) -> io::Result<()> {
+        self.disk.write_page(current.id, &current.data);
 
         let mut page_table = self.page_table.write().await;
 
@@ -107,9 +113,10 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
             eprintln!("No write page while replacing write page");
         }
 
-        let id = self.inc_id();
-        **current = Page::new(id);
-        page_table.insert(id, PageIndex::Write);
+        let page_id = self.inc_id();
+        current.reset();
+        current.id = page_id;
+        page_table.insert(page_id, PageIndex::Write);
 
         Ok(())
     }
@@ -125,18 +132,19 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
         self.replacer.lock().await.record_access(i);
 
         let page_id = self.inc_id();
-        let page = Page::new(page_id);
-        page.pin();
-        self.disk.write_page(&page).expect("Couldn't write page");
+
+        let mut page = self.read[i].write().await;
+        page.reset();
+        page.id = page_id;
+        page.pins += 1;
+
+        self.disk.write_page(page.id, &page.data);
         self.page_table
             .write()
             .await
             .insert(page_id, PageIndex::Read(i));
 
-        let id = page.id;
-        self.read.write().await[i].replace(page);
-
-        Some(id)
+        Some(page_id)
     }
 
     pub async fn fetch_entry(&self, kd: &KeyData) -> Option<Entry> {
@@ -151,9 +159,8 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
                     assert!(*i < READ_SIZE);
                     self.replacer.lock().await.record_access(*i);
 
-                    let pages = self.read.read().await;
-                    let page = pages[*i].as_ref().expect("Invalid page index in table");
-                    self.unpin_page(page.id).await;
+                    let page = self.read[*i].read().await;
+                    // self.unpin_page(page.id).await; // LOCKS
 
                     page.read_entry(kd.offset as usize)
                 }
@@ -164,27 +171,29 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
             i
         } else {
             // TODO: Should return an error here
-            let Some(i) = self.replacer.lock().await.evict() else { return None };
-            self.replacer.lock().await.record_access(i);
+            let mut replacer = self.replacer.lock().await;
+            let Some(i) = replacer.evict() else { return None };
+            replacer.record_access(i);
 
             i
         };
 
         assert!(i < READ_SIZE);
-        if let Some(_) = &self.read.read().await[i] {
-            self.page_table.write().await.remove(&kd.page_id);
-        }
 
-        let page = self.disk.read_page(kd.page_id).expect("Couldn't read page");
-        let page_id = page.id;
+        // Replace page
+        let page_data = self.disk.read_page(kd.page_id).expect("Couldn't read page");
+        let mut page = self.read[i].write().await;
+        page.reset();
+        page.id = kd.page_id;
+        page.data = page_data;
 
         let entry = page.read_entry(kd.offset as usize);
         self.page_table
             .write()
             .await
             .insert(page.id, PageIndex::Read(i));
-        self.read.write().await[i].replace(page);
-        self.unpin_page(page_id).await;
+        // self.read.write().await[i].replace(page);
+        self.unpin_page(page.id).await;
 
         entry
     }
@@ -199,21 +208,21 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
         };
         drop(page_table);
 
-        let pages = self.read.read().await;
-        let page = pages[i].as_ref().expect("Invalid page index in table");
+        let mut page = self.read[i].write().await;
 
-        if page.pins.fetch_sub(1, SeqCst) <= 1 {
+        page.pins -= 1;
+        if page.pins == 0 {
             self.replacer.lock().await.set_evictable(i, true);
         }
     }
 
-    pub async fn get_current(&self) -> RwLockWriteGuard<Page> {
+    pub async fn get_current(&self) -> RwLockWriteGuard<'_, PageInner> {
         self.current.write().await
     }
 
     pub async fn flush_current(&self) {
         let current = self.current.write().await;
-        self.disk.write_page(&current).expect("Couldn't write page");
+        self.disk.write_page(current.id, &current.data);
     }
 }
 
@@ -236,7 +245,7 @@ mod test {
         let _cu = CleanUp::file(DB_FILE);
         let disk = Disk::new(DB_FILE).await?;
 
-        let m = PageCacheInner::<DEFAULT_READ_SIZE>::new(disk, 2, Page::new(0));
+        let m = PageCacheInner::<DEFAULT_READ_SIZE>::new(disk, 2, Page::new(0), 0);
 
         let mut page_w = m.get_current().await;
 
@@ -289,7 +298,7 @@ mod test {
         let _cu = CleanUp::file(DB_FILE);
         let disk = Disk::new(DB_FILE).await?;
 
-        let mut m = PageCacheInner::<3>::new(disk, 2, Page::new(0));
+        let mut m = PageCacheInner::<3>::new(disk, 2, Page::new(0), 0);
 
         let _ = m.new_page().await.expect("should have space for page 1"); // ts = 0
         let _ = m.new_page().await.expect("should have space for page 2"); // ts = 1
@@ -336,13 +345,11 @@ mod test {
         let new_page_id = m.new_page().await.expect("a page should have been evicted");
         assert!(new_page_id == 4, "Got: {}", new_page_id);
 
-        let pages = m.read.read().await;
+        let pages = &m.read;
         let expected_ids = vec![1, 2, 4];
         let mut actual_ids = Vec::new();
         for page in pages.iter() {
-            if let Some(page) = page {
-                actual_ids.push(page.id)
-            }
+            actual_ids.push(page.read().await.id)
         }
 
         assert!(

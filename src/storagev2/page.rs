@@ -1,6 +1,5 @@
-use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering::*};
-
 use bytes::Buf;
+use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::storagev2::log::Entry;
 
@@ -30,19 +29,52 @@ pub enum PageError {
     NotEnoughSpace,
 }
 
-#[derive(Debug)]
-pub struct Page {
-    pub id: PageID,
-    pub data: [u8; PAGE_SIZE],
-    pub pins: AtomicI32,
-    len: AtomicUsize,
-}
+pub struct Page(RwLock<PageInner>);
 
 impl Page {
     pub fn new(id: PageID) -> Self {
+        Self(RwLock::new(PageInner::new(id)))
+    }
+
+    pub async fn read(&self) -> RwLockReadGuard<'_, PageInner> {
+        self.0.read().await
+    }
+
+    pub async fn write(&self) -> RwLockWriteGuard<'_, PageInner> {
+        self.0.write().await
+    }
+}
+
+impl Default for Page {
+    fn default() -> Self {
+        Self(RwLock::new(PageInner::default()))
+    }
+}
+
+#[derive(Debug)]
+pub struct PageInner {
+    pub id: PageID,
+    pub data: [u8; PAGE_SIZE],
+    pub pins: u32,
+    len: usize,
+}
+
+impl Default for PageInner {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            data: [0; PAGE_SIZE],
+            pins: 0,
+            len: 0,
+        }
+    }
+}
+
+impl PageInner {
+    pub fn new(id: PageID) -> Self {
         let data = [0; PAGE_SIZE];
-        let pins = AtomicI32::new(0);
-        let len = AtomicUsize::new(0);
+        let pins = 0;
+        let len = 0;
 
         Self {
             id,
@@ -63,8 +95,8 @@ impl Page {
             empty += 1;
         }
 
-        let pins = AtomicI32::new(0);
-        let len = AtomicUsize::new(PAGE_SIZE - empty);
+        let pins = 0;
+        let len = PAGE_SIZE - empty;
         Self {
             id,
             data,
@@ -75,10 +107,12 @@ impl Page {
 
     pub fn write_entry(&mut self, entry: &Entry) -> Result<u64, PageError> {
         let len = entry.len();
-        let offset = self.len.fetch_add(len, SeqCst);
+
+        let offset = self.len;
         if offset + len > PAGE_SIZE {
             return Err(PageError::NotEnoughSpace);
         }
+        self.len += len;
 
         put_bytes!(self.data, entry.as_bytes(), offset, len);
 
@@ -120,7 +154,14 @@ impl Page {
         })
     }
 
-    pub fn pin(&self) {
-        self.pins.fetch_add(1, SeqCst);
+    pub fn pin(&mut self) {
+        self.pins += 1;
+    }
+
+    pub fn reset(&mut self) {
+        assert!(self.pins == 0);
+
+        self.data = [0; PAGE_SIZE];
+        self.len = 0;
     }
 }

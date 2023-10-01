@@ -43,17 +43,20 @@ impl KeyDir {
     }
 }
 
-pub async fn bootstrap(disk: &Disk) -> (KeyDir, Page) {
+pub async fn bootstrap(disk: &Disk) -> (KeyDir, Page, PageID) {
     let len = disk.len().await;
     let pages = len / PAGE_SIZE;
 
-    let mut page = Page::new(0);
+    let page = Page::default();
+    let mut page_w = page.write().await;
     let mut inner = HashMap::new();
     for page_id in 0..pages as u32 {
-        page = disk.read_page(page_id).expect("should read page");
+        page_w.data = disk.read_page(page_id).expect("should read page");
+        page_w.id = page_id;
+        // Could probably get away with not fully resetting the page on each iteration
 
         let mut offset = 0;
-        while let Some(entry) = page.read_entry(offset) {
+        while let Some(entry) = page_w.read_entry(offset) {
             match entry.t {
                 EntryType::Put => {
                     inner.insert(
@@ -73,7 +76,10 @@ pub async fn bootstrap(disk: &Disk) -> (KeyDir, Page) {
         }
     }
 
-    (KeyDir { inner }, page)
+    let latest_id = page_w.id;
+    drop(page_w);
+
+    (KeyDir { inner }, page, latest_id)
 }
 
 #[cfg(test)]
@@ -84,7 +90,7 @@ mod test {
         disk::Disk,
         key_dir::{bootstrap, KeyData, KeyDir},
         log::{Entry, EntryType},
-        page::Page,
+        page::PageInner,
         test::CleanUp,
     };
 
@@ -107,20 +113,20 @@ mod test {
         ];
 
         let mut current_id = 0;
-        let mut current = Page::new(current_id);
+        let mut current = PageInner::new(current_id);
         for e in entries {
             if let Err(_) = current.write_entry(&e) {
-                disk.write_page(&current).expect("failed to write page");
+                disk.write_page(current.id, &current.data);
                 current_id += 1;
-                current = Page::new(current_id);
+                current = PageInner::new(current_id);
                 current
                     .write_entry(&e)
                     .expect("new current should have space");
             }
         }
-        disk.write_page(&current).expect("failed to write page");
+        disk.write_page(current.id, &current.data);
 
-        let (key_dir, _) = bootstrap(&disk).await;
+        let (key_dir, _, _) = bootstrap(&disk).await;
 
         let expected = KeyDir {
             inner: HashMap::from([

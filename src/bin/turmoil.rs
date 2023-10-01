@@ -108,10 +108,10 @@ fn main() -> io::Result<()> {
 // Mostly the same, tcp listener/stream swapped out for turmoil and signal handler removed
 pub async fn run() {
     let disk = Disk::new(DB_FILE).await.expect("Failed to open db file");
-    let (kd, latest) = key_dir::bootstrap(&disk).await;
+    let (kd, latest, latest_id) = key_dir::bootstrap(&disk).await;
     let kd = Arc::new(RwLock::new(kd));
 
-    let m = PageCache::new(disk, 2, latest);
+    let m = PageCache::new(disk, 2, latest, latest_id);
 
     let listener = TcpListener::bind("0.0.0.0:4444")
         .await
