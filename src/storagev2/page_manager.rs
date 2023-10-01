@@ -65,13 +65,14 @@ impl PageCache {
         self.0.inc_id()
     }
 
-    pub async fn replace_page(
+    pub async fn replace_current(
         &self,
         current: &mut RwLockWriteGuard<'_, PageInner>,
     ) -> io::Result<()> {
-        self.0.replace_page(current).await
+        self.0.replace_current(current).await
     }
 
+    #[cfg(test)]
     pub async fn new_page<'a>(&mut self) -> Option<PageID> {
         self.0.new_page().await
     }
@@ -124,7 +125,7 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
         self.next_id.fetch_add(1, SeqCst)
     }
 
-    pub async fn replace_page(
+    pub async fn replace_current(
         &self,
         current: &mut RwLockWriteGuard<'_, PageInner>,
     ) -> io::Result<()> {
@@ -145,6 +146,7 @@ impl<const READ_SIZE: usize> PageCacheInner<READ_SIZE> {
         Ok(())
     }
 
+    #[cfg(test)]
     pub async fn new_page<'a>(&self) -> Option<PageID> {
         let i = match self.free.lock().await.pop() {
             Some(i) => i,

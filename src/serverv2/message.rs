@@ -33,7 +33,7 @@ impl Message {
                 let offset = match current.write_entry(&entry) {
                     Ok(o) => o,
                     Err(e) if e == PageError::NotEnoughSpace => {
-                        if let Err(e) = m.replace_page(&mut current).await {
+                        if let Err(e) = m.replace_current(&mut current).await {
                             todo!()
                         }
 
@@ -55,7 +55,7 @@ impl Message {
                 let entry = Entry::new(k, &[], EntryType::Delete);
                 if let Err(e) = current.write_entry(&entry) {
                     if e == PageError::NotEnoughSpace {
-                        if let Err(e) = m.replace_page(&mut current).await {
+                        if let Err(e) = m.replace_current(&mut current).await {
                             todo!()
                         }
                         current.write_entry(&entry).unwrap();

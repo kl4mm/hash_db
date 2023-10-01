@@ -118,6 +118,8 @@ impl PageInner {
         let key_len = src.get_u64();
         let value_len = src.get_u64();
 
+        // Commented out: index out of bounds errors
+        // Uncommented: key returns wrong value
         // if rm + (key_len + value_len) as usize > PAGE_SIZE {
         //     eprintln!("ERROR: log entry was written that exceeded page size");
         //     return None;
