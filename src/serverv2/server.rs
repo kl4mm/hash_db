@@ -43,14 +43,17 @@ pub async fn run() {
             Ok((stream, addr)) => {
                 tokio::spawn(accept(stream, addr, m.clone(), kd.clone()));
             }
-            Err(e) => eprintln!("ERROR: {}", e),
+            Err(e) => eprintln!("error: {}", e),
         }
     }
 }
 
 async fn accept(stream: TcpStream, addr: SocketAddr, pc: PageCache, kd: Arc<RwLock<KeyDir>>) {
     if let Err(e) = accept_loop(stream, addr, pc, kd).await {
-        eprintln!("ERROR: {}", e);
+        match e.kind() {
+            io::ErrorKind::ConnectionReset => {}
+            e => eprintln!("error: {}", e),
+        }
     }
 }
 

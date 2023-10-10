@@ -121,7 +121,7 @@ impl PageInner {
         // Commented out: index out of bounds errors
         // Uncommented: key returns wrong value
         // if rm + (key_len + value_len) as usize > PAGE_SIZE {
-        //     eprintln!("ERROR: log entry was written that exceeded page size");
+        //     eprintln!("error: log entry was written that exceeded page size");
         //     return None;
         // }
 

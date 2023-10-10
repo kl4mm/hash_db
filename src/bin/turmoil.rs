@@ -5,7 +5,23 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::ToSocketAddrs,
     sync::Notify,
+    time::Instant,
 };
+
+macro_rules! client {
+    ($id:expr, $addr:expr, $range:expr) => {
+        tokio::spawn(async {
+            let ins = Instant::now();
+
+            let c = Client::new($id, $addr, $range);
+            if let Err(e) = c.run().await {
+                eprintln!("{} failed with error: {}", c.id, e);
+            }
+
+            eprintln!("{} finished in {:?}", c.id, ins.elapsed());
+        });
+    };
+}
 
 fn generate_inserts(range: Range<u16>) -> HashMap<String, String> {
     let mut ret = HashMap::with_capacity(range.len());
@@ -66,8 +82,6 @@ impl<T: ToSocketAddrs> Client<T> {
             );
         }
 
-        eprintln!("{}: SUCCESS", self.id);
-
         Ok(())
     }
 }
@@ -87,33 +101,14 @@ pub async fn main() -> io::Result<()> {
             }
         }
     });
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
-    tokio::spawn(async {
-        let c = Client::new(0, "0.0.0.0:4444", 0..1000);
-        if let Err(e) = c.run().await {
-            eprintln!("{} failed with error: {}", c.id, e);
-        }
-    });
-
-    tokio::spawn(async {
-        let c = Client::new(1, "0.0.0.0:4444", 1000..2000);
-        if let Err(e) = c.run().await {
-            eprintln!("{} failed with error: {}", c.id, e);
-        }
-    });
-
-    tokio::spawn(async {
-        let c = Client::new(2, "0.0.0.0:4444", 3000..4000);
-        if let Err(e) = c.run().await {
-            eprintln!("{} failed with error: {}", c.id, e);
-        }
-    });
+    client!(0, "0.0.0.0:4444", 0..1000);
+    client!(1, "0.0.0.0:4444", 1000..2000);
+    client!(2, "0.0.0.0:4444", 3000..4000);
 
     tokio::time::sleep(Duration::from_secs(1)).await;
     notify.notify_one();
-
-    eprintln!("FINISH");
 
     Ok(())
 }

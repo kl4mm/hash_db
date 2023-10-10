@@ -114,12 +114,7 @@ impl LRUKReplacer {
                 assert!(node.get().pin == 0);
                 node.remove();
             }
-            Entry::Vacant(_) => {
-                eprintln!(
-                    "warn: attempt to remove frame that has not been registered in the replacer: \
-                    {i}"
-                );
-            }
+            Entry::Vacant(_) => {}
         }
     }
 }

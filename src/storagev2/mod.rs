@@ -28,12 +28,12 @@ pub mod test {
             match self.1 {
                 Type::File => {
                     if let Err(e) = std::fs::remove_file(self.0) {
-                        eprintln!("ERROR: could not remove {} - {}", self.0, e);
+                        eprintln!("error: could not remove {} - {}", self.0, e);
                     }
                 }
                 Type::Dir => {
                     if let Err(e) = std::fs::remove_dir_all(self.0) {
-                        eprintln!("ERROR: could not remove {} - {}", self.0, e);
+                        eprintln!("error: could not remove {} - {}", self.0, e);
                     }
                 }
             }
